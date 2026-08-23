@@ -115,4 +115,4 @@ macro_rules_attribute = { version = "0.2.2", default-features = false }
 smol = { version = "2.0.2", default-features = false }
 smol-hyper = { version = "0.1.1", default-features = false }
 smol-macros = { version = "0.1.1", default-features = false }
-vetis-macros = { version = "0.1.1" }
+vetis-macros = { version = "0.1.2" }
