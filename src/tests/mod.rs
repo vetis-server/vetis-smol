@@ -1,5 +1,5 @@
 #![allow(unreachable_code, dead_code)]
-use ::http::Version;
+use http::Version;
 
 mod host;
 mod lib;
