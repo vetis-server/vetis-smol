@@ -50,7 +50,7 @@ async fn test_http_localhost() -> Result<(), Box<dyn std::error::Error>> {
 #[apply(test!)]
 async fn test_https() -> Result<(), Box<dyn std::error::Error>> {
     let handler = handler_fn(|_req| async move { Ok(Response::builder().text("Hello, World!")) });
-
+    let root= env!("CARGO_MANIFEST_DIR");    
     let mut server = http!(
         from_crate => vetis_smol,
         hostname => "localhost",
@@ -60,9 +60,9 @@ async fn test_https() -> Result<(), Box<dyn std::error::Error>> {
         interface => "0.0.0.0".parse().unwrap(),
         handler => handler,
         security_config => security! {
-            cert => "../certs/server.der",
-            key => "../certs/server.key.der",
-            ca_cert => "../certs/ca.der",
+            cert => &format!("{root}/certs/server.der"),
+            key => &format!("{root}/certs/server.key.der"),
+            ca_cert => &format!("{root}*/certs/ca.der"),
             client_auth => false
         }
     )
@@ -72,7 +72,7 @@ async fn test_https() -> Result<(), Box<dyn std::error::Error>> {
         .start()
         .await?;
 
-    let certificate = DeboaCertificate::from_file("../certs/ca.der", ContentEncoding::DER).await?;
+    let certificate = DeboaCertificate::from_file(&format!("{root}/certs/ca.der"), ContentEncoding::DER).await?;
 
     let client = Client::builder()
         .certificate(certificate)
