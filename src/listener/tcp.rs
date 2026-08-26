@@ -12,6 +12,7 @@ use http::Version;
 use hyper::server::conn::http1;
 #[cfg(feature = "http2")]
 use hyper::server::conn::http2;
+use hyper_util::server::conn::auto;
 use log::error;
 use peekable::future::AsyncPeekable;
 use smol::{Async, Task};
@@ -116,10 +117,11 @@ impl TcpListener {
             }
         };
 
-        let http11_only = self
+        let allow_plain_connection = self
             .config
             .protos()
-            .contains(&Version::HTTP_11);
+            .iter()
+            .any(|v| *v == Version::HTTP_11 && *v == Version::HTTP_2);
 
         let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
         let future = async move {
@@ -199,23 +201,31 @@ impl TcpListener {
                         }
                     }
                 } else {
-                    #[cfg(feature = "http1")]
+                    #[cfg(any(feature = "http1", feature = "http2"))]
                     {
-                        if http11_only {
+                        if allow_plain_connection {
                             let service = HttpService::new(hosts.clone(), client_addr);
-                            smol::spawn(
-                                http1::Builder::new()
-                                    .serve_connection(FuturesIo::new(peekable), service),
-                            )
+                            smol::spawn(async move {
+                                let result = auto::Builder::new(SmolExecutor::new())
+                                    .serve_connection_with_upgrades(
+                                        FuturesIo::new(peekable),
+                                        service,
+                                    )
+                                    .await;
+                                match result {
+                                    Err(e) => {
+                                        error!("Error while processing request: {}", e.to_string())
+                                    }
+                                    Ok(()) => {}
+                                }
+                            })
                             .detach();
-                        } else {
-                            panic!("Unsupported protocol");
                         }
                     }
 
-                    #[cfg(any(feature = "http2", feature = "http3"))]
+                    #[cfg(feature = "http3")]
                     {
-                        panic!("Unsupported protocol");
+                        panic!("Insecure connections are only allowed with HTTP/1.1 and H2 (H2C)");
                     }
                 }
             }
