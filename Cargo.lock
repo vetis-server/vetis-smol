@@ -566,9 +566,9 @@ checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
 name = "deboa"
-version = "0.1.5-beta.1"
+version = "0.1.5-beta.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e3ea2d0968fb1ada5f11bbe9b83e480db8ec44324662143e986dfa773917a1c"
+checksum = "bd59fe2fa37660e6ba3d0cda40e9a182e992db6081e1f62a82e69465170afdc9"
 dependencies = [
  "async-lock",
  "base64",
@@ -1305,9 +1305,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.14.0"
+version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
+checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown",
