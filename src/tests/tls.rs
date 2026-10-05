@@ -6,17 +6,17 @@ mod tls_tests {
     use std::sync::Arc;
 
     use vetis::{
-        errors::VetisError,
-        host::{handler_fn, HostConfig},
-        security::SecurityConfig,
         Response,
+        errors::VetisError,
+        host::{HostConfig, handler_fn},
+        security::SecurityConfig,
     };
 
     use crate::{
-        host::{path::HandlerPath, HostImpl},
+        VetisHosts,
+        host::{HostImpl, path::HandlerPath},
         tests::{CA_CERT, SERVER_CERT, SERVER_KEY},
         tls::TlsFactory,
-        VetisHosts,
     };
 
     fn create_test_hosts() -> VetisHosts<HostImpl> {

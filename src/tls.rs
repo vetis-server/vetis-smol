@@ -1,43 +1,41 @@
-use std::sync::Arc;
-
-use crate::{host::HostImpl, VetisHosts};
-
+use crate::host::Host;
 use rustls::{
+    ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer},
     server::ResolvesServerCertUsingSni,
     sign::CertifiedKey,
-    ServerConfig,
 };
+use std::{collections::HashSet, sync::Arc};
 use vetis::{
+    VetisHosts,
     errors::{StartError, VetisError},
-    host::Host,
+    security::Alpn,
 };
 
-pub struct TlsFactory {}
+pub(crate) struct TlsFactory {}
 
 impl TlsFactory {
-    pub async fn create_tls_config(
-        hosts: VetisHosts<HostImpl>,
-        alpn_protocols: Vec<Vec<u8>>,
-    ) -> Result<Option<ServerConfig>, VetisError> {
+    pub(crate) async fn create_tls_config(
+        hosts: VetisHosts<Host>,
+    ) -> Result<Arc<ServerConfig>, VetisError> {
         let hosts = hosts.clone();
         #[cfg(feature = "__rustls_awc_lc_rs")]
         let provider = rustls::crypto::aws_lc_rs::default_provider();
         #[cfg(feature = "__rustls_ring")]
         let provider = rustls::crypto::ring::default_provider();
         let mut resolver = ResolvesServerCertUsingSni::new();
-        let hosts = hosts.read().await;
-        for (hostname, host) in hosts.iter() {
-            if let Some(security) = host
-                .config()
-                .security()
-            {
-                let cert = security.cert();
-                let key = security.key();
+        let mut alpns: HashSet<Vec<u8>> = HashSet::new();
+        for (hostname, host) in hosts
+            .pin_owned()
+            .iter()
+        {
+            if let Some(tls) = host.tls() {
+                let cert = tls.cert();
+                let key = tls.key();
 
                 let cert = CertificateDer::from(cert.to_vec());
                 let mut chain = vec![cert];
-                if let Some(ca_cert) = security.ca_cert() {
+                if let Some(ca_cert) = tls.ca() {
                     let ca_cert = CertificateDer::from(ca_cert.to_vec());
                     chain.push(ca_cert);
                 }
@@ -48,7 +46,15 @@ impl TlsFactory {
                     VetisError::Tls(format!("Failed to create certified key: {}", e))
                 })?;
 
-                let hostname = hostname.clone();
+                let (hostname, _) = hostname
+                    .rsplit_once(':')
+                    .unwrap_or_else(|| (hostname, "443"));
+
+                alpns.extend(
+                    tls.supported_alpns()
+                        .iter()
+                        .map(From::<&Alpn>::from),
+                );
 
                 resolver
                     .add(&hostname, certified_key)
@@ -60,13 +66,13 @@ impl TlsFactory {
             .with_protocol_versions(rustls::ALL_VERSIONS)
             .map_err(|e| VetisError::Start(StartError::Tls(e.to_string())))?;
 
+        // TODO: Add client verification (mTLS)
+
         let mut tls_config = builder
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(resolver));
-
         tls_config.max_early_data_size = u32::MAX;
-        tls_config.alpn_protocols = alpn_protocols;
-
-        Ok(Some(tls_config))
+        tls_config.alpn_protocols = Vec::from_iter(alpns);
+        Ok(tls_config.into())
     }
 }

@@ -1,33 +1,64 @@
-use crate::{
-    host::HostImpl,
-    listener::{supported_alpns, Listener, ListenerConfig, ListenerResult},
-    tls::TlsFactory,
-    VetisHosts, VetisRwLock,
+use crate::{VetisHosts, host::Host, tls::TlsFactory, worker::udp::UdpWorker};
+use crossfire::{
+    MAsyncRx, MAsyncTx,
+    mpmc::{self, Array},
 };
-use bytes::Bytes;
-use futures_util::StreamExt;
-use h3::server::{Connection, RequestResolver};
-use h3_quinn::{
-    quinn::{self, crypto::rustls::QuicServerConfig},
-    Connection as QuinnConnection,
-};
-use http::{HeaderName, HeaderValue, StatusCode};
-use hyper_body_utils::HttpBody;
-use log::{debug, error, info};
+use futures_lite::StreamExt;
+use futures_util::{FutureExt, stream::FuturesUnordered};
+use h3_quinn::quinn::{self, crypto::rustls::QuicServerConfig};
+use papaya::HashMap;
+use quinn::{Connection, Endpoint};
 use smol::Task;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{hash::Hash, net::SocketAddr, sync::Arc};
 use vetis::{
-    errors::{StartError, VetisError},
-    host::Host,
-    request::Request,
-    Response, VetisResult,
+    LogSender, VetisResult, error,
+    errors::{ListenerError, StartError, VetisError},
+    host::Host as _,
+    info,
+    listener::ListenerConfig,
+    log::Logger,
 };
-
 /// UDP listener
 pub struct UdpListener {
     config: ListenerConfig,
-    task: Option<Task<()>>,
-    hosts: VetisHosts<HostImpl>,
+    hosts: VetisHosts<Host>,
+    signal: Option<see::sync::Sender<bool>>,
+    inner: Option<Endpoint>,
+    logger: Option<Logger<LogSender>>,
+    handle: Option<Task<VetisResult<()>>>,
+}
+
+impl Hash for UdpListener {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.config
+            .port()
+            .hash(state);
+        self.config
+            .interface()
+            .hash(state);
+    }
+}
+
+impl PartialEq for UdpListener {
+    fn eq(&self, other: &Self) -> bool {
+        self.config.port() == other.config.port()
+            && self
+                .config
+                .interface()
+                == other
+                    .config
+                    .interface()
+    }
+
+    fn ne(&self, other: &Self) -> bool {
+        self.config.port() != other.config.port()
+            && self
+                .config
+                .interface()
+                != other
+                    .config
+                    .interface()
+    }
 }
 
 impl UdpListener {
@@ -41,278 +72,271 @@ impl UdpListener {
     ///
     /// * `Self` - A new `UdpListener` instance.
     pub fn new(config: ListenerConfig) -> Self {
-        Self { config, task: None, hosts: Arc::new(VetisRwLock::new(HashMap::new())) }
+        Self {
+            config,
+            hosts: VetisHosts::new(HashMap::new()),
+            signal: None,
+            inner: None,
+            logger: None,
+            handle: None,
+        }
+    }
+
+    async fn create_inner_listener(&mut self) -> VetisResult<Endpoint> {
+        let addr = SocketAddr::new(
+            *self
+                .config
+                .interface(),
+            self.config.port(),
+        );
+
+        let tls_config = TlsFactory::create_tls_config(self.hosts.clone()).await?;
+        let quic_config = QuicServerConfig::try_from(tls_config)
+            .map_err(|e| VetisError::Start(StartError::Tls(e.to_string())))?;
+        let server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
+
+        quinn::Endpoint::server(server_config, addr)
+            .map_err(|e| VetisError::Listener(ListenerError::Bind(e.to_string())))
     }
 }
 
-impl Listener for UdpListener {
-    type Host = HostImpl;
+impl vetis::listener::Listener for UdpListener {
+    type RuntimeHost = Host;
+    type Logger = Logger<LogSender>;
 
-    /// Allow set virtual hosts
-    ///
-    /// # Arguments
-    ///
-    /// * `hosts` - A `VetisHosts` instance containing the virtual hosts.
-    fn set_hosts(&mut self, hosts: VetisHosts<HostImpl>) {
-        self.hosts = hosts;
-    }
-
-    /// Listen for incoming connections
-    ///
-    /// # Returns
-    ///
-    /// * `ListenerResult<'_, ()>` - A `ListenerResult` instance containing the result of the listener.
-    fn listen(&mut self) -> ListenerResult<'_, ()> {
-        let future = async move {
-            let addr = SocketAddr::new(
-                *self
-                    .config
-                    .interface(),
-                self.config.port(),
-            );
-
-            let tls_config =
-                TlsFactory::create_tls_config(self.hosts.clone(), supported_alpns()).await?;
-
-            if let Some(tls_config) = tls_config {
-                let quic_config = QuicServerConfig::try_from(tls_config)
-                    .map_err(|e| VetisError::Start(StartError::Tls(e.to_string())))?;
-
-                let server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
-
-                let endpoint = quinn::Endpoint::server(server_config, addr)
-                    .map_err(|e| VetisError::Bind(e.to_string()))?;
-
-                let server_task = self
-                    .handle_connections(endpoint, self.hosts.clone())
-                    .await?;
-
-                self.task = Some(server_task);
-            }
-
-            Ok(())
+    fn add_host(&mut self, host: Arc<Self::RuntimeHost>) -> VetisResult<()> {
+        // Add a host
+        let hosts = self
+            .hosts
+            .pin_owned();
+        let hostname = match self.config.port() {
+            443 => host
+                .hostname()
+                .to_string(),
+            _ => format!("{}:{}", host.hostname(), self.config().port()),
         };
-        Box::pin(future)
+        hosts.insert(hostname, host.clone());
+        Ok(())
     }
 
-    /// Stop the listener
-    ///
-    /// # Returns
-    ///
-    /// * `ListenerResult<'_, ()>` - A `ListenerResult` instance containing the result of the listener.
-    fn stop(&mut self) -> ListenerResult<'_, ()> {
-        Box::pin(async move {
-            if let Some(task) = self.task.take() {
-                task.cancel().await;
-            }
-            Ok(())
-        })
+    fn remove_host(&mut self, hostname: &str) -> VetisResult<()> {
+        let hosts = self
+            .hosts
+            .pin_owned();
+        hosts.remove(hostname);
+        Ok(())
     }
-}
 
-impl UdpListener {
-    async fn handle_connections(
-        &mut self,
-        endpoint: quinn::Endpoint,
-        hosts: VetisHosts<HostImpl>,
-    ) -> Result<Task<()>, VetisError> {
-        let task = smol::spawn(async move {
-            while let Some(new_conn) = endpoint
-                .accept()
-                .await
-            {
-                let hosts = hosts.clone();
-                let addr = new_conn.remote_address();
-                smol::spawn(async move {
-                    match new_conn.await {
-                        Ok(conn) => {
-                            let mut h3_conn: Connection<QuinnConnection, Bytes> =
-                                match Connection::new(QuinnConnection::new(conn)).await {
-                                    Ok(conn) => conn,
-                                    Err(err) => {
-                                        error!("Cannot create connection: {:?}", err);
-                                        return;
-                                    }
-                                };
+    fn logger(&mut self, logger: Self::Logger) {
+        self.logger = Some(logger);
+    }
 
-                            loop {
-                                match h3_conn
-                                    .accept()
-                                    .await
-                                {
-                                    Ok(Some(resolver)) => {
-                                        let result =
-                                            handle_http_request(resolver, hosts.clone(), addr);
+    fn total_hosts(&self) -> usize {
+        self.hosts.len()
+    }
 
-                                        if let Err(err) = result {
-                                            error!("Error handling HTTP request: {:?}", err);
-                                        }
-                                    }
-                                    Ok(None) => {
-                                        break;
-                                    }
-                                    Err(err) => {
-                                        error!("Cannot accept connection: {:?}", err);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            error!("Accepting connection failed: {:?}", err);
-                        }
-                    }
-                })
-                .detach();
+    async fn reserve_port(&mut self) -> VetisResult<()> {
+        if self.config.port() == 0 {
+            let listener = self
+                .create_inner_listener()
+                .await?;
+
+            let local_addr = listener
+                .local_addr()
+                .map_err(|e| VetisError::Listener(ListenerError::Bind(e.to_string())))?;
+
+            self.config
+                .reassign_port(local_addr.port());
+
+            self.inner = Some(listener);
+        }
+
+        Ok(())
+    }
+
+    fn reassign_port(&mut self, port: u16) {
+        self.config
+            .reassign_port(port);
+    }
+
+    fn config(&self) -> &ListenerConfig {
+        &self.config
+    }
+
+    async fn listen(&mut self) -> VetisResult<()> {
+        info!(&self.logger, "UDP listener started...");
+        let listener = if let Some(listener) = self.inner.take() {
+            listener
+        } else {
+            self.create_inner_listener()
+                .await?
+        };
+
+        let (shut_sender, shut_recv) = see::sync::channel(false);
+        let shut_signal = shut_recv.clone();
+        let logger = self.logger.clone();
+        let mut dispatcher = ConnectionDispatcher::new(
+            listener,
+            self.hosts.clone(),
+            self.config.clone(),
+            self.logger.clone(),
+        );
+        let handle = smol::spawn(async move {
+            futures_util::select! {
+                _ = shut_signal.changed().fuse() => {
+                    info!(logger, "Stopping listener...");
+                    dispatcher.stop().await
+                }
+                res = dispatcher.run().fuse() => res
             }
-
-            endpoint
-                .wait_idle()
-                .await;
         });
 
-        Ok(task)
+        self.signal = Some(shut_sender);
+        self.handle = Some(handle);
+
+        Ok(())
+    }
+
+    async fn stop(mut self) -> VetisResult<()> {
+        if let Some(signal) = self.signal.take() {
+            let _ = signal.send(true);
+            if let Some(handle) = self.handle.take() {
+                match handle.await {
+                    Ok(_) => info!(&self.logger, "UDP Listener stopped successfully!"),
+                    Err(e) => {
+                        error!(self.logger, "Error while stopping listener: {}", e.to_string())
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
-fn handle_http_request(
-    resolver: RequestResolver<QuinnConnection, Bytes>,
-    hosts: VetisHosts<HostImpl>,
-    client_addr: SocketAddr,
-) -> VetisResult<()> {
-    let hosts = hosts.clone();
-    smol::spawn(async move {
-        let result = resolver
-            .resolve_request()
-            .await;
-        if let Ok((req, stream)) = result {
-            let (mut send_stream, recv_stream) = stream.split();
-            let (parts, _) = req.into_parts();
-            let method = parts.method.clone();
-            let uri = parts.uri.clone();
-            let body = HttpBody::from_generic_server(recv_stream);
-            let request = http::Request::from_parts(parts, body);
+struct ConnectionDispatcher {
+    listener: quinn::Endpoint,
+    hosts: VetisHosts<Host>,
+    signal: Option<see::sync::Sender<bool>>,
+    config: ListenerConfig,
+    logger: Option<Logger<LogSender>>,
+    workers: FuturesUnordered<Task<VetisResult<()>>>,
+    sender: Option<MAsyncTx<Array<Connection>>>,
+}
 
-            let host = request
-                .uri()
-                .authority();
+impl ConnectionDispatcher {
+    pub fn new(
+        listener: quinn::Endpoint,
+        hosts: VetisHosts<Host>,
+        config: ListenerConfig,
+        logger: Option<Logger<LogSender>>,
+    ) -> Self {
+        Self {
+            listener,
+            hosts,
+            signal: None,
+            config,
+            logger,
+            workers: FuturesUnordered::new(),
+            sender: None,
+        }
+    }
 
-            let hosts = hosts.clone();
-            let response = if let Some(authority) = host {
-                debug!("Serving request for host: {}", authority.host());
-                let hosts = hosts.read().await;
-                let host = hosts.get(authority.host());
-                let response = if let Some(host) = host {
-                    let (parts, body) = request.into_parts();
-                    let request = Request::from_parts(parts, body);
+    async fn init(&mut self, receiver: MAsyncRx<Array<Connection>>) -> VetisResult<()> {
+        info!(&self.logger, "Initializing udp workers...");
+        let (shut_sender, shut_recv) = see::sync::channel(false);
 
-                    let vetis_response = host
-                        .route(request)
-                        .await;
+        for worker_num in 1..=self
+            .config
+            .workers()
+        {
+            info!(&self.logger, "Initializing udp worker: {}", worker_num);
+            let mut worker = UdpWorker::new(
+                worker_num,
+                self.hosts.clone(),
+                self.logger.clone(),
+                receiver.clone(),
+            );
 
-                    let response = if let Err(err) = vetis_response {
-                        error!("Error executing request: {:?}", err);
-                        Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .text("Internal server error")
-                            .into_inner()
-                    } else {
-                        let mut response = vetis_response
-                            .unwrap()
-                            .into_inner();
-
-                        let default_headers = host
-                            .config()
-                            .default_headers();
-
-                        if let Some(default_headers) = default_headers {
-                            for (key, value) in default_headers {
-                                let Ok(header_name) = HeaderName::from_bytes(key.as_bytes()) else {
-                                    error!("Invalid header name: {}", key);
-                                    continue;
-                                };
-
-                                let Ok(header_value) = HeaderValue::from_str(value.as_str()) else {
-                                    error!("Invalid header value: {}", value);
-                                    continue;
-                                };
-
-                                response
-                                    .headers_mut()
-                                    .insert(header_name, header_value);
-                            }
-                        }
-
-                        response
-                    };
-
-                    // TODO: Log request and its response status code (move it to oneshot channel?)
-                    info!("{} {} {} {}", client_addr, method, uri, response.status());
-
-                    Ok::<_, VetisError>(response)
-                } else {
-                    error!("Virtual host not found: {}", authority.host());
-                    let response = Response::builder()
-                        .status(StatusCode::BAD_GATEWAY)
-                        .text("Host not found")
-                        .into_inner();
-                    Ok(response)
-                };
-
-                response
-            } else {
-                error!("Host not found in request");
-                let response = Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .text("Host not found")
-                    .into_inner();
-                Ok(response)
+            let shut_signal = shut_recv.clone();
+            let logger = self.logger.clone();
+            let worker_future = async move {
+                futures_util::select! {
+                    _ = shut_signal.changed().fuse() => {
+                        info!(logger, "Stopping udp worker {}...", worker.id());
+                        worker.stop().await
+                    },
+                    res = worker.run().fuse() => res
+                }
             };
 
-            if let Ok(response) = response {
-                let (parts, mut body) = response.into_parts();
+            self.workers
+                .push(smol::spawn(worker_future));
+        }
 
-                let mut resp = http::Response::builder()
-                    .status(parts.status)
-                    .version(parts.version)
-                    .extension(parts.extensions)
-                    .body(())
-                    .unwrap();
+        self.signal = Some(shut_sender);
 
-                resp.headers_mut()
-                    .extend(parts.headers);
+        Ok(())
+    }
 
-                match send_stream
-                    .send_response(resp)
+    async fn run(&mut self) -> VetisResult<()> {
+        let (dispatch_sender, dispatch_recv) = mpmc::bounded_async::<Connection>(
+            self.config
+                .workers(),
+        );
+
+        if let Err(e) = self
+            .init(dispatch_recv.clone())
+            .await
+        {
+            error!(self.logger, "Could not start workers: {}", e.to_string())
+        }
+
+        self.sender = Some(dispatch_sender);
+
+        while let Some(new_conn) = self
+            .listener
+            .accept()
+            .await
+        {
+            let conn = new_conn
+                .await
+                .map_err(|e| VetisError::Worker(e.to_string()))?;
+
+            if let Some(sender) = self.sender.as_ref()
+                && let Err(e) = sender
+                    .send(conn)
                     .await
-                {
-                    Ok(_) => {
-                        debug!("Successfully respond to connection");
-                    }
-                    Err(err) => {
-                        error!("Unable to send response to connection: {:?}", err);
-                    }
-                }
-
-                while let Some(buf) = body.next().await {
-                    if let Ok(buf) = buf {
-                        if let Ok(bytes) = buf.into_data() {
-                            let _ = send_stream
-                                .send_data(bytes)
-                                .await;
-                        }
-                    }
-                }
-
-                let _ = send_stream
-                    .finish()
-                    .await;
-            } else {
-                error!("HttpServer - Error serving connection: {:?}", response.err());
+            {
+                error!(self.logger, "Could not distribute connection: {}", e.to_string())
             }
         }
-    })
-    .detach();
 
-    Ok(())
+        self.listener
+            .wait_idle()
+            .await;
+
+        Ok(())
+    }
+
+    pub async fn stop(mut self) -> VetisResult<()> {
+        if let Some(signal) = self.signal.take() {
+            let _ = signal.send(true);
+        }
+        while let Some(handle) = self
+            .workers
+            .next()
+            .await
+        {
+            match handle {
+                Ok(_) => {
+                    info!(&self.logger, "UDP worker stopped successfully!");
+                }
+                Err(e) => {
+                    error!(self.logger, "Internal error: {:?}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
 }

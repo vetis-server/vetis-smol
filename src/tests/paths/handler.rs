@@ -1,23 +1,23 @@
 use crate::{
-    host::{path::HandlerPath, HostImpl},
-    tests::{default_protocol_version, CA_CERT, SERVER_CERT, SERVER_KEY},
+    host::{HostImpl, path::HandlerPath},
+    tests::{CA_CERT, SERVER_CERT, SERVER_KEY, default_protocol_version},
 };
 use deboa::{
     cert::{CertificateExt, ContentEncoding},
     request,
 };
-use deboa_smol::{cert::DeboaCertificate, Client};
+use deboa_smol::{Client, cert::DeboaCertificate};
 use http::StatusCode;
 use macro_rules_attribute::apply;
 use rand::random_range;
 use smol_macros::test;
 use std::error::Error;
 use vetis::{
-    host::{handler_fn, HostConfig},
+    Response, VetisServer as _,
+    host::{HostConfig, handler_fn},
     listener::ListenerConfig,
     security::SecurityConfig,
     server::ServerConfig,
-    Response, VetisServer as _,
 };
 
 #[apply(test!)]

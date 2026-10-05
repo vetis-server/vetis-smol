@@ -3,10 +3,10 @@ use deboa::{
     cert::{CertificateExt as _, ContentEncoding},
     request::get,
 };
-use deboa_smol::{cert::DeboaCertificate, Client};
+use deboa_smol::{Client, cert::DeboaCertificate};
 use macro_rules_attribute::apply;
 use smol_macros::test;
-use vetis::{host::handler_fn, Response, VetisServer as _};
+use vetis::{Response, VetisServer as _, host::handler_fn};
 use vetis_macros::{http, security};
 
 #[cfg(feature = "http1")]

@@ -1,17 +1,17 @@
 use crate::{
-    host::{path::HandlerPath, HostImpl},
-    tests::default_protocol_version,
     Vetis,
+    host::{HostImpl, path::HandlerPath},
+    tests::default_protocol_version,
 };
 use http::StatusCode;
 use macro_rules_attribute::apply;
 use smol_macros::test;
 use std::error::Error;
 use vetis::{
-    host::{handler_fn, HostConfig},
+    Response, VetisServer as _,
+    host::{HostConfig, handler_fn},
     listener::ListenerConfig,
     server::ServerConfig,
-    Response, VetisServer as _,
 };
 
 fn create_listener() -> ListenerConfig {

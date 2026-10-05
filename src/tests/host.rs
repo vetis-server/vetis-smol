@@ -6,9 +6,9 @@ mod host_tests {
     use macro_rules_attribute::apply;
     use smol_macros::test;
 
-    use vetis::host::{handler_fn, Host, HostConfig};
+    use vetis::host::{Host, HostConfig, handler_fn};
 
-    use crate::host::{path::HandlerPath, HostImpl};
+    use crate::host::{HostImpl, path::HandlerPath};
 
     async fn do_add_host() -> Result<(), Box<dyn std::error::Error>> {
         let config = HostConfig::builder()

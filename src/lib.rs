@@ -5,25 +5,31 @@ compile_error!("http2 and http3 requires rust-tls!");
 
 /// Host module
 pub mod host;
+/// IO module
+pub mod io;
 /// Listener module
 pub mod listener;
 /// Runtime module
 pub mod rt;
+/// Service module
+pub(crate) mod service;
 /// Tests module
 #[cfg(test)]
 mod tests;
 /// TLS module
 mod tls;
+/// Worker module
+pub(crate) mod worker;
 
 pub use crate::rt::Vetis;
 pub use vetis::{
+    VetisHosts,
     base::VetisServer,
     errors,
-    host::{handler_fn, HostConfig},
+    host::HostConfig,
     listener::ListenerConfig,
     request::Request,
     response::Response,
-    security::SecurityConfig,
+    security::{Tls, TlsConfig},
     server::ServerConfig,
-    VetisHosts, VetisRwLock,
 };
