@@ -1,4 +1,4 @@
-use crate::common::default_protocol_version;
+use crate::{TestResult, common::default_protocol_version};
 use deboa::{
     cert::{CertificateExt as _, ContentEncoding},
     request::get,
@@ -6,19 +6,21 @@ use deboa::{
 use deboa_smol::{Client, cert::DeboaCertificate};
 use macro_rules_attribute::apply;
 use smol_macros::test;
-use vetis::{Response, VetisServer as _, host::handler_fn};
-use vetis_macros::{http, security};
+use std::net::Ipv4Addr;
+use vetis::{Response, VetisServer as _};
+use vetis_macros::{http, tls};
+use vetis_smol::host::path::handler_fn;
 
-#[cfg(feature = "http1")]
-#[apply(test!)]
-async fn test_http_localhost() -> Result<(), Box<dyn std::error::Error>> {
-    let handler = handler_fn(|_req| async move { Ok(Response::builder().text("Hello, World!")) });
-
+#[apply(test)]
+async fn test_http_localhost() -> TestResult<()> {
     let mut server = http!(
         from_crate => vetis_smol,
-        port => 8888,
-        handler => handler,
-        protos => vec![default_protocol_version()],
+        port => 60002,
+        protos => &[http::Version::HTTP_11],
+        allow_unsafe_conn => true,
+        handler => handler_fn(
+            |_req, _ctx| async move { Ok(Response::builder().text("Hello, World!")) }
+        )
     )
     .await?;
 
@@ -26,9 +28,12 @@ async fn test_http_localhost() -> Result<(), Box<dyn std::error::Error>> {
         .start()
         .await?;
 
-    let client = Client::builder().build();
+    let client = Client::builder()
+        .prior_knowledge(true)
+        .build();
 
-    let response = get("http://localhost:8888")?
+    let response = get("http://localhost:60002")?
+        .version(http::Version::HTTP_11)
         .send_with(&client)
         .await?;
 
@@ -47,22 +52,21 @@ async fn test_http_localhost() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[apply(test!)]
-async fn test_https() -> Result<(), Box<dyn std::error::Error>> {
-    let handler = handler_fn(|_req| async move { Ok(Response::builder().text("Hello, World!")) });
-    let root = env!("CARGO_MANIFEST_DIR");
+#[apply(test)]
+async fn test_https() -> TestResult<()> {
+    let handler =
+        handler_fn(|_req, _ctx| async move { Ok(Response::builder().text("Hello, World!")) });
     let mut server = http!(
         from_crate => vetis_smol,
         hostname => "localhost",
-        root_directory => "src".into(),
-        protos => vec![default_protocol_version()],
-        port => 60000,
-        interface => "0.0.0.0".parse().unwrap(),
+        protos => &[default_protocol_version()],
+        port => 60001,
+        interface => Ipv4Addr::UNSPECIFIED,
         handler => handler,
-        security_config => security! {
-            cert => &format!("{root}/certs/server.der"),
-            key => &format!("{root}/certs/server.key.der"),
-            ca_cert => &format!("{root}*/certs/ca.der"),
+        tls => tls! {
+            cert => "certs/server.der",
+            key => "certs/server.key.der",
+            ca_cert => "certs/ca.der",
             client_auth => false
         }
     )
@@ -72,14 +76,14 @@ async fn test_https() -> Result<(), Box<dyn std::error::Error>> {
         .start()
         .await?;
 
-    let certificate =
-        DeboaCertificate::from_file(&format!("{root}/certs/ca.der"), ContentEncoding::DER).await?;
+    let certificate = DeboaCertificate::from_file("certs/ca.der", ContentEncoding::DER).await?;
 
     let client = Client::builder()
         .certificate(certificate)
         .build();
 
-    let response = get("https://localhost:60000")?
+    let response = get("https://localhost:60001")?
+        .version(default_protocol_version())
         .send_with(&client)
         .await?;
 

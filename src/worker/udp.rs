@@ -101,7 +101,7 @@ impl UdpWorker {
             .pin()
             .values()
         {
-            if let Some(handle) = handle {
+            if let Some(_handle) = handle {
                 //handle.cancel();
             }
         }

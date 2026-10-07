@@ -27,7 +27,7 @@ pub use vetis::{
     base::VetisServer,
     errors,
     host::HostConfig,
-    listener::ListenerConfig,
+    listener::{Listener as VetisListener, ListenerConfig},
     request::Request,
     response::Response,
     security::{Tls, TlsConfig},

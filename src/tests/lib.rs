@@ -1,92 +1,33 @@
 use crate::{
-    Vetis,
-    host::{HostImpl, path::HandlerPath},
-    tests::default_protocol_version,
+    host::{
+        Host,
+        path::{HandlerPath, handler_fn},
+    },
+    rt::Vetis,
 };
 use http::StatusCode;
 use macro_rules_attribute::apply;
 use smol_macros::test;
-use std::error::Error;
-use vetis::{
-    Response, VetisServer as _,
-    host::{HostConfig, handler_fn},
-    listener::ListenerConfig,
-    server::ServerConfig,
-};
+use vetis::{Response, VetisServer as _, VetisTestResult, host::HostConfig, listener::Listener};
 
-fn create_listener() -> ListenerConfig {
-    ListenerConfig::builder()
-        .port(8080)
-        .protos(vec![default_protocol_version()])
-        .interface(
+#[apply(test)]
+async fn test_vetis_add_host() -> VetisTestResult<()> {
+    let vhost_config = HostConfig::builder()
+        .hostname("localhost")
+        .root_directory("src/tests")
+        .bind_addresses(&[(
             "0.0.0.0"
                 .parse()
                 .unwrap(),
-        )
-        .build()
-        .unwrap()
-}
-
-#[test]
-fn test_vetis_new() {
-    let config = ServerConfig::builder()
-        .add_listener(create_listener())
-        .build()
-        .unwrap();
-    let server = Vetis::new(config);
-
-    assert_eq!(
-        server
-            .config()
-            .listeners()
-            .len(),
-        1
-    );
-}
-
-#[test]
-fn test_vetis_config() {
-    let config = ServerConfig::builder()
-        .add_listener(create_listener())
-        .build()
-        .unwrap();
-
-    let server = Vetis::new(config);
-
-    assert_eq!(
-        server
-            .config()
-            .listeners()
-            .len(),
-        1
-    );
-    assert_eq!(
-        server
-            .config()
-            .listeners()[0]
-            .port(),
-        8080
-    );
-}
-
-#[apply(test!)]
-async fn test_vetis_add_host() -> Result<(), Box<dyn Error>> {
-    let config = ServerConfig::builder()
-        .add_listener(create_listener())
-        .build()
-        .unwrap();
-    let mut server = Vetis::new(config);
-
-    let vhost_config = HostConfig::builder()
-        .hostname("localhost")
-        .root_directory("src/tests".into())
+            8080,
+        )])
         .build()?;
 
-    let mut vhost = HostImpl::new(vhost_config);
+    let mut vhost = Host::new(vhost_config).await?;
 
     let handler_path = HandlerPath::builder()
         .uri("/")
-        .handler(handler_fn(|_request| async move {
+        .handler(handler_fn(|_request, _ctx| async move {
             Ok(Response::builder()
                 .status(StatusCode::OK)
                 .text("Hello, World!"))
@@ -95,95 +36,51 @@ async fn test_vetis_add_host() -> Result<(), Box<dyn Error>> {
 
     vhost.add_path(handler_path);
 
-    server
+    let server = Vetis::builder()
         .add_host(vhost)
-        .await;
+        .await?;
 
     assert_eq!(
         server
-            .hosts()
-            .read()
-            .await
-            .len(),
+            .listeners
+            .first()
+            .unwrap()
+            .total_hosts(),
         1
     );
 
     Ok(())
 }
 
-#[apply(test!)]
-async fn test_vetis_start_no_hosts() -> Result<(), Box<dyn Error>> {
-    let config = ServerConfig::builder()
-        .add_listener(create_listener())
-        .build()
-        .unwrap();
-    let mut server = Vetis::new(config);
-
+#[apply(test)]
+async fn test_vetis_start_no_hosts() -> VetisTestResult<()> {
+    let mut server = Vetis::default();
     let result = server.start().await;
-
     assert!(result.is_err());
-
     Ok(())
 }
 
-#[apply(test!)]
-async fn test_vetis_hosts() -> Result<(), Box<dyn Error>> {
-    let config = ServerConfig::builder()
-        .add_listener(create_listener())
-        .build()
-        .unwrap();
-    let mut server = Vetis::new(config);
+#[apply(test)]
+async fn test_vetis_add_multiple_hosts() -> VetisTestResult<()> {
+    let mut server = Vetis::builder();
 
-    let vhost_config = HostConfig::builder()
-        .hostname("localhost")
-        .root_directory("src/tests".into())
-        .build()?;
-
-    let mut vhost = HostImpl::new(vhost_config);
-
-    let handler_path = HandlerPath::builder()
-        .uri("/")
-        .handler(handler_fn(|_request| async move {
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .text("Hello, World!"))
-        }))
-        .build()?;
-
-    vhost.add_path(handler_path);
-
-    server
-        .add_host(vhost)
-        .await;
-
-    let hosts = server
-        .hosts()
-        .read()
-        .await;
-    assert_eq!(hosts.len(), 1);
-
-    Ok(())
-}
-
-#[apply(test!)]
-async fn test_vetis_add_multiple_hosts() -> Result<(), Box<dyn Error>> {
-    let config = ServerConfig::builder()
-        .add_listener(create_listener())
-        .build()
-        .unwrap();
-
-    let mut server = Vetis::new(config);
     for i in 0..3 {
         let vhost_config = HostConfig::builder()
             .hostname(&format!("host{}", i))
-            .root_directory("src/tests".into())
+            .root_directory("src/tests")
+            .bind_addresses(&[(
+                "0.0.0.0"
+                    .parse()
+                    .unwrap(),
+                8080,
+            )])
             .build()?;
 
-        let mut vhost = HostImpl::new(vhost_config);
+        let mut vhost = Host::new(vhost_config).await?;
 
         let handler_path = HandlerPath::builder()
             .uri("/")
-            .handler(handler_fn(|_request| async move {
+            .handler(handler_fn(|_request, _ctx| async move {
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .text("Hello, World!"))
@@ -192,17 +89,18 @@ async fn test_vetis_add_multiple_hosts() -> Result<(), Box<dyn Error>> {
 
         vhost.add_path(handler_path);
 
-        server
+        server = server
             .add_host(vhost)
-            .await;
+            .await?;
     }
 
     assert_eq!(
         server
-            .hosts()
-            .read()
-            .await
-            .len(),
+            .build()
+            .listeners()
+            .first()
+            .unwrap()
+            .total_hosts(),
         3
     );
 

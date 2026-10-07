@@ -135,7 +135,7 @@ impl TcpWorker {
             let _ = signal.send(true);
         }
 
-        for handle in self
+        for _handle in self
             .connections
             .pin()
             .values()

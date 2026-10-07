@@ -7,7 +7,6 @@ use crate::{
 };
 use crossfire::mpsc::{self};
 use futures_lite::prelude::*;
-#[cfg(any(feature = "http1", feature = "http2"))]
 use http::Version;
 use hyper::rt::Executor;
 use log::info;
@@ -366,13 +365,6 @@ impl vetis::VetisServer for Vetis {
                 .stop()
                 .await?
         }
-        Ok(())
-    }
-
-    /// Reload the server configuration
-    async fn reload(&mut self, _new_config: ServerConfig) -> VetisResult<()> {
-        // TODO: ServerConfig should be serializable and we should receive entire
-        // configuration?
         Ok(())
     }
 }

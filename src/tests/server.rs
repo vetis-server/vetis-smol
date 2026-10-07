@@ -1,93 +1,167 @@
 use crate::{
-    host::{HostImpl, path::HandlerPath},
+    host::{
+        Host,
+        path::{HandlerPath, handler_fn},
+    },
     tests::{
         CA_CERT, IP6_SERVER_CERT, IP6_SERVER_KEY, SERVER_CERT, SERVER_KEY, default_protocol_version,
     },
 };
-use deboa::{
-    cert::{CertificateExt, ContentEncoding},
-    request,
-};
+use deboa::cert::{CertificateExt, ContentEncoding};
 use deboa_smol::{Client, cert::DeboaCertificate};
 use http::StatusCode;
 use macro_rules_attribute::apply;
 use smol_macros::test;
-use std::error::Error;
-use vetis::{
-    Response, VetisServer as _,
-    host::{HostConfig, handler_fn},
-    listener::ListenerConfig,
-    security::SecurityConfig,
-    server::ServerConfig,
-};
+use vetis::{VetisServer, VetisTestResult, host::HostConfig, security::TlsConfig};
 
-#[apply(test!)]
-async fn test_multiple_interfaces() -> Result<(), Box<dyn Error>> {
-    let host = if cfg!(windows) { "localhost" } else { "ip6-localhost" };
-
-    let ipv4 = ListenerConfig::builder()
-        .port(8080)
-        .protos(vec![default_protocol_version()])
-        .interface(
+#[apply(test)]
+async fn test_no_https_error() -> VetisTestResult<()> {
+    let localhost_config = HostConfig::builder()
+        .hostname("localhost")
+        .bind_addresses(&[(
             "0.0.0.0"
                 .parse()
                 .unwrap(),
-        )
+            55000,
+        )])
         .build()?;
 
-    let ipv6 = ListenerConfig::builder()
-        .port(8081)
-        .protos(vec![default_protocol_version()])
-        .interface(
-            "::".parse()
-                .unwrap(),
-        )
+    let mut localhost_host = Host::new(localhost_config).await?;
+
+    let ip4_root_path = HandlerPath::builder()
+        .uri("/hello")
+        .handler(handler_fn(|_request, _ctx| async move {
+            let response = vetis::Response::builder()
+                .status(StatusCode::OK)
+                .text("Hello from ipv4");
+            Ok(response)
+        }))
         .build()?;
 
-    let config = ServerConfig::builder()
-        .add_listener(ipv4)
-        .add_listener(ipv6)
+    localhost_host.add_path(ip4_root_path);
+
+    let mut server = crate::Vetis::builder()
+        .add_host(localhost_host)
+        .await?
+        .build();
+
+    server
+        .start()
+        .await?;
+
+    let client = Client::default();
+
+    let response = deboa::request::get("https://localhost:55000/hello")?
+        .send_with(&client)
+        .await;
+
+    assert!(response.is_err());
+
+    Ok(())
+}
+
+#[apply(test)]
+async fn test_http() -> VetisTestResult<()> {
+    let ip4_root_path = HandlerPath::builder()
+        .uri("/hello")
+        .handler(handler_fn(|_request, _ctx| async move {
+            let response = vetis::Response::builder()
+                .status(StatusCode::OK)
+                .text("Hello from ipv4");
+            Ok(response)
+        }))
         .build()?;
 
-    let security_config = SecurityConfig::builder()
-        .ca_cert_from_bytes(CA_CERT.to_vec())
-        .cert_from_bytes(SERVER_CERT.to_vec())
-        .key_from_bytes(SERVER_KEY.to_vec())
-        .build()?;
-
+    // TODO: Add a path to config, even HandlerPath, build host from config
     let localhost_config = HostConfig::builder()
         .hostname("localhost")
-        .root_directory("src/tests".into())
-        .security(security_config)
+        .bind_addresses(&[(
+            "0.0.0.0"
+                .parse()
+                .unwrap(),
+            55002,
+        )])
+        .build()?;
+
+    let mut localhost_host = Host::new(localhost_config).await?;
+    localhost_host.add_path(ip4_root_path);
+
+    let mut server = crate::Vetis::builder()
+        .add_host(localhost_host)
+        .await?
+        .build();
+
+    server
+        .start()
+        .await?;
+
+    let client = Client::builder()
+        .protos(vec![default_protocol_version()])
+        .prior_knowledge(true)
+        .build();
+
+    let response = deboa::request::get("http://localhost:55002/hello")?
+        .version(default_protocol_version())
+        .send_with(&client)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    Ok(())
+}
+
+#[apply(test)]
+async fn test_multiple_interfaces() -> VetisTestResult<()> {
+    let host = if cfg!(windows) { "localhost" } else { "ip6-localhost" };
+
+    let ip4_security_config = TlsConfig::builder()
+        .ca_file(CA_CERT)
+        .cert_file(SERVER_CERT)
+        .key_file(SERVER_KEY)
         .build()?;
 
     #[cfg(unix)]
-    let ip6_security_config = SecurityConfig::builder()
-        .ca_cert_from_bytes(CA_CERT.to_vec())
-        .cert_from_bytes(IP6_SERVER_CERT.to_vec())
-        .key_from_bytes(IP6_SERVER_KEY.to_vec())
+    let ip6_security_config = TlsConfig::builder()
+        .ca_file(CA_CERT)
+        .cert_file(IP6_SERVER_CERT)
+        .key_file(IP6_SERVER_KEY)
         .build()?;
 
     #[cfg(windows)]
     let ip6_security_config = SecurityConfig::builder()
-        .ca_cert_from_bytes(CA_CERT.to_vec())
-        .cert_from_bytes(SERVER_CERT.to_vec())
-        .key_from_bytes(SERVER_KEY.to_vec())
+        .ca_file(CA_CERT)
+        .cert_file(SERVER_CERT)
+        .key_file(SERVER_KEY)
+        .build()?;
+
+    let ip4_localhost_config = HostConfig::builder()
+        .hostname("localhost")
+        .tls(ip4_security_config)
+        .bind_addresses(&[(
+            "0.0.0.0"
+                .parse()
+                .unwrap(),
+            65000,
+        )])
         .build()?;
 
     let ip6_localhost_config = HostConfig::builder()
         .hostname(host)
-        .root_directory("src/tests".into())
-        .security(ip6_security_config)
+        .tls(ip6_security_config)
+        .bind_addresses(&[(
+            "::".parse()
+                .unwrap(),
+            65001,
+        )])
         .build()?;
 
-    let mut localhost_host = HostImpl::new(localhost_config);
-    let mut ip6_localhost_host = HostImpl::new(ip6_localhost_config);
+    let mut ip4_localhost_host = Host::new(ip4_localhost_config).await?;
+    let mut ip6_localhost_host = Host::new(ip6_localhost_config).await?;
 
     let ip4_root_path = HandlerPath::builder()
         .uri("/hello")
-        .handler(handler_fn(|_request| async move {
-            let response = Response::builder()
+        .handler(handler_fn(|_request, _ctx| async move {
+            let response = vetis::Response::builder()
                 .status(StatusCode::OK)
                 .text("Hello from ipv4");
             Ok(response)
@@ -96,34 +170,34 @@ async fn test_multiple_interfaces() -> Result<(), Box<dyn Error>> {
 
     let ip6_root_path = HandlerPath::builder()
         .uri("/hello")
-        .handler(handler_fn(|_request| async move {
-            let response = Response::builder()
+        .handler(handler_fn(|_request, _ctx| async move {
+            let response = vetis::Response::builder()
                 .status(StatusCode::OK)
                 .text("Hello from ipv6");
             Ok(response)
         }))
         .build()?;
 
-    localhost_host.add_path(ip4_root_path);
+    ip4_localhost_host.add_path(ip4_root_path);
     ip6_localhost_host.add_path(ip6_root_path);
 
-    let mut server = crate::Vetis::new(config);
-    server
-        .add_host(localhost_host)
-        .await;
-    server
+    let mut server = crate::Vetis::builder()
+        .add_host(ip4_localhost_host)
+        .await?
         .add_host(ip6_localhost_host)
-        .await;
+        .await?
+        .build();
 
     server
         .start()
         .await?;
 
+    let cert = smol::fs::read(CA_CERT.to_string()).await?;
     let client = Client::builder()
-        .certificate(DeboaCertificate::from_slice(CA_CERT, ContentEncoding::DER))
+        .certificate(DeboaCertificate::from_slice(&cert, ContentEncoding::DER))
         .build();
 
-    let request = request::get("https://localhost:8080/hello")?
+    let request = deboa::request::get("https://localhost:65000/hello")?
         .send_with(&client)
         .await?;
 
@@ -135,8 +209,9 @@ async fn test_multiple_interfaces() -> Result<(), Box<dyn Error>> {
         "Hello from ipv4"
     );
 
+    let cert = smol::fs::read(CA_CERT.to_string()).await?;
     let client = Client::builder()
-        .certificate(DeboaCertificate::from_slice(CA_CERT, ContentEncoding::DER))
+        .certificate(DeboaCertificate::from_slice(&cert, ContentEncoding::DER))
         .bind_addr(
             "::1"
                 .parse()
@@ -144,7 +219,7 @@ async fn test_multiple_interfaces() -> Result<(), Box<dyn Error>> {
         )
         .build();
 
-    let request = request::get(format!("https://{}:8081/hello", host))?
+    let request = deboa::request::get(format!("https://{}:65001/hello", host))?
         .send_with(&client)
         .await?;
 

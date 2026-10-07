@@ -23,7 +23,6 @@ eula = false
 
 [features]
 default = [
-  "http1",
   "http2",
   "http3",
   "rust-tls"
@@ -35,12 +34,6 @@ rustls-provider = ["__rustls_awc_lc_rs"]
 __rustls_awc_lc_rs = ["futures-rustls/aws-lc-rs", "quinn/rustls-aws-lc-rs"]
 __rustls_ring = ["futures-rustls/ring", "quinn/rustls-ring"]
 
-http1 = [
-  "hyper/http1",
-  "hyper/server",
-  "hyper-util/server",
-  "hyper-util/http1",
-]
 http2 = [
   "hyper/http2",
   "hyper/server",
@@ -57,9 +50,7 @@ http3 = [
 ]
 
 [dependencies]
-async-lock = "3.4.1"
 async-net = "2.0.0"
-async-signal = { version = "0.2.12", default-features = false }
 base64 = { version = "0.23.1", default-features = false }
 bytes = "1.12.1"
 clap = { version = "4.6.6", default-features = false, features = [
@@ -72,18 +63,23 @@ futures-rustls = { version = "0.26.0", optional = true, default-features = false
 futures-util = { version = "0.3.32", features = [ "async-await-macro" ] }
 h3 = { version = "0.0.8", optional = true, default-features = false }
 h3-quinn = { version = "0.0.10", optional = true, default-features = false }
-http = "1.4.2"
-http-body-util = { version = "0.1.3" }
-hyper = { version = "1.10.1", optional = true, default-features = false }
+http = "1.5.0"
+http-body-util = { version = "0.1.5" }
+hyper = { version = "1.12.0", default-features = false, features = [
+  "http1",
+  "server",
+] }
 #hyper-body-utils = { version = "0.1.17", optional = true, default-features = false }
 hyper-body-utils = { path = "../hyper-body-utils", default-features = false }
-hyper-util = { version = "0.1.21", optional = true, default-features = false }
+hyper-util = { version = "0.1.21", default-features = false, features = [
+  "server",
+  "http1",
+] }
 log = "0.4.34"
 logforth = { version = "0.30.1", features = ["starter-log"] }
-mimalloc = "0.1.52"
 papaya = "0.2.5"
 patricia_tree = "0.10.2"
-peekable = { version = "0.6.1", features = ["future"] }
+peekable = { version = "0.6.2", features = ["future"] }
 quinn = { version = "0.11.11", optional = true, default-features = false }
 rand = { version = "0.10.3", default-features = false }
 regex = { version = "1.12.4", default-features = false }
@@ -91,7 +87,6 @@ rustls = { version = "0.23.40", optional = true, default-features = false }
 see = "0.1.2"
 serde = "1.0.228"
 serde_yaml_ng = "0.10.0"
-signal-hook = { version = "0.4.5", default-features = false }
 smol = { version = "2.0.2", default-features = false }
 smol-hyper = { version = "0.1.1", default-features = false }
 smol-macros = { version = "0.1.1", default-features = false }
@@ -124,7 +119,7 @@ macro_rules_attribute = { version = "0.2.2", default-features = false }
 smol = { version = "2.0.2", default-features = false }
 smol-hyper = { version = "0.1.1", default-features = false }
 smol-macros = { version = "0.1.1", default-features = false }
-#vetis-log = { path = "../vetis-extras/vetis-log" }
-vetis-log = { version = "0.1.0-beta.1" }
-#vetis-macros = { path = "../vetis/vetis-macros" }
-vetis-macros = { version = "0.1.3-beta.4" }
+vetis-log = { path = "../vetis-extras/vetis-log" }
+#vetis-log = { version = "0.1.0-beta.1" }
+vetis-macros = { path = "../vetis/vetis-macros" }
+#vetis-macros = { version = "0.1.3-beta.4" }
