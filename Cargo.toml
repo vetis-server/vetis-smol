@@ -1,6 +1,6 @@
 [package]
 name = "vetis-smol"
-version = "0.1.1"
+version = "0.1.2-beta.1"
 authors = ["Rogerio Araújo <rogerio.araujo@gmail.com>"]
 edition = "2024"
 repository = "https://github.com/vetis-server/vetis-smol"
@@ -50,9 +50,6 @@ http3 = [
 ]
 
 [dependencies]
-#vetis = { version = "0.1.7-beta.4", default-features = false }
-vetis = { git = "https://github.com/vetis-server/vetis.git", default-features = false }
-
 async-net = "2.0.0"
 base64 = { version = "0.23.1", default-features = false }
 bytes = "1.12.1"
@@ -97,30 +94,17 @@ thiserror = "2.0.21"
 time = { version = "0.3.55", features = ["formatting"] }
 typetag = "0.2.22"
 url = "2.5.7"
+vetis = { version = "0.1.7-beta.5", default-features = false }
 
 [dev-dependencies]
-#deboa = { version = "0.1.5-beta.2" }
-# deboa-smol = { version = "0.1.4-beta.1", default-features = false, features = [
-#   "http2",
-#   #"http3",
-#   "rust-tls",
-#   "default-rustls-provider",
-#   "default-rustls-verifier",
-# ] }
-#vetis-log = { version = "0.1.0-beta.1" }
-#vetis-macros = { version = "0.1.3-beta.4" }
-
-deboa = { git = "https://github.com/deboa-client/deboa.git" }
-deboa-smol = { git = "https://github.com/deboa-client/deboa-smol.git", default-features = false, features = [
+deboa = { version = "0.1.5-beta.3" }
+deboa-smol = { version = "0.1.4-beta.1", default-features = false, features = [
   "http2",
   #"http3",
   "rust-tls",
   "default-rustls-provider",
   "default-rustls-verifier",
 ] }
-vetis-log = { git = "https://github.com/vetis-server/vetis-contrib.git" }
-vetis-macros = { git = "https://github.com/vetis-server/vetis.git" }
-
 macro_rules_attribute = { version = "0.2.2", default-features = false }
 smol = { version = "2.0.2", default-features = false }
 smol-hyper = { version = "0.1.1", default-features = false }
