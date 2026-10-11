@@ -484,9 +484,9 @@ dependencies = [
 
 [[package]]
 name = "deboa-smol"
-version = "0.1.4-beta.1"
+version = "0.1.4-beta.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14c024d38e636e72d5ffe9e625d19d180a5f3361096d86a5004ca4df59c81ef5"
+checksum = "6a756a4ce2184ed6c864cd456c87d5bb1bcaaaa5ea75f4819957e9908633b382"
 dependencies = [
  "async-executor",
  "async-lock",
@@ -508,7 +508,6 @@ dependencies = [
  "indexmap",
  "log",
  "macro_rules_attribute",
- "minimime",
  "quinn",
  "rand",
  "regex",
@@ -526,9 +525,9 @@ dependencies = [
 
 [[package]]
 name = "deboa-tls"
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaab1ddb0f7e24dad4c048de2d6615285e2dfd20bdff49fc147124a2e6b311e9"
+checksum = "7888362295e39f4965bcbb863e864d6b9e21501ae4851477bcc65df048a82910"
 dependencies = [
  "deboa",
  "futures-io",
@@ -1410,12 +1409,6 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
-
-[[package]]
-name = "minimime"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bcaa89828ea1e6ab547d9d61ae49f1f9336459b593f285ecc402af9152e16b2"
 
 [[package]]
 name = "mio"
