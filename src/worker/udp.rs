@@ -22,7 +22,7 @@ pub(crate) struct UdpWorker {
     hosts: VetisHosts<Host>,
     logger: Option<Logger<LogSender>>,
     receiver: MAsyncRx<Array<quinn::Connection>>,
-    connections: Arc<HashMap<SocketAddr, Option<Task<VetisResult<()>>>>>,
+    connections: Arc<HashMap<SocketAddr, Task<VetisResult<()>>>>,
     signal: Option<see::sync::Sender<bool>>,
 }
 
@@ -85,7 +85,7 @@ impl UdpWorker {
             });
             self.connections
                 .pin()
-                .insert(client_addr, Some(handle));
+                .insert(client_addr, handle);
         }
 
         Ok(())
@@ -96,14 +96,12 @@ impl UdpWorker {
             let _ = signal.send(true);
         }
 
-        for handle in self
+        for _handle in self
             .connections
             .pin()
             .values()
         {
-            if let Some(_handle) = handle {
-                //handle.cancel();
-            }
+            //handle.cancel();
         }
 
         Ok(())

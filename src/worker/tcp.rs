@@ -140,7 +140,7 @@ impl TcpWorker {
             .pin()
             .values()
         {
-            //handle.abort();
+            //handle.cancel();
         }
 
         Ok(())
