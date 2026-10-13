@@ -120,7 +120,7 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           args:
             "--package vetis-smol --locked --release --features \"${{ matrix.protocols }} rust-tls deboa-smol/${{ matrix.protocols }} deboa-smol/rust-tls deboa-smol/default-rustls-provider deboa-smol/default-rustls-verifier\" --no-default-features"
-          strip: true
+          strip: false
           cross-version: ${{ matrix.platform.cross-version || 'v0.2.5' }}
 
       - name: Run tests for ${{ matrix.platform.target }} with vetis-smol and ${{ matrix.protocols }} and rust-tls features
