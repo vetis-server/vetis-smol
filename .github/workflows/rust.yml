@@ -49,7 +49,7 @@ jobs:
             runs-on: ubuntu-24.04
             target: x86_64-unknown-linux-musl
           - os-name: Linux-aarch64
-            runs-on: ubuntu-24.04
+            runs-on: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
           - os-name: Linux-arm
             runs-on: ubuntu-24.04
@@ -83,7 +83,7 @@ jobs:
           #  skip-tests: true
           #  cross-version: 588b3c99db52b5a9c5906fab96cfadcf1bde7863
           - os-name: Windows-aarch64
-            runs-on: windows-latest
+            runs-on: windows-2025-arm64
             target: aarch64-pc-windows-msvc
             skip-tests: true
           - os-name: Windows-i686
