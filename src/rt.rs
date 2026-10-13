@@ -174,11 +174,13 @@ impl VetisBuilder {
 ///
 /// # Examples
 ///
-/// ```rust,no_run
+/// ```rust,ignore
+/// use macro_rules_attribute::apply;
+/// use smol_macros::test;
 /// use vetis::{server::ServerConfig};
-/// use vetis_tokio::{Vetis, VetisServer as _};
+/// use vetis_smol::{Vetis, VetisServer as _};
 ///
-/// #[tokio::main]
+/// #[apply(test)]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let config = ServerConfig::builder().build()?;
 ///     let mut server = Vetis::new(config);
