@@ -183,7 +183,7 @@ impl VetisBuilder {
 /// #[apply(test)]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let config = ServerConfig::builder().build()?;
-///     let mut server = Vetis::new(config);
+///     let mut server = Vetis::from_config(config).await?;
 ///
 ///     // Add hosts...
 ///

@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .hostname("localhost")
         .tls(security_config)
         .root_directory("/home/rogerio/Downloads")
-        .bind_addresses(vec![(
+        .bind_addresses(&[(
             "0.0.0.0"
                 .parse()
                 .unwrap(),
