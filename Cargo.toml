@@ -1,6 +1,6 @@
 [package]
 name = "vetis-smol"
-version = "0.1.2-beta.1"
+version = "0.1.2-beta.2"
 authors = ["Rogerio Araújo <rogerio.araujo@gmail.com>"]
 edition = "2024"
 repository = "https://github.com/vetis-server/vetis-smol"
@@ -50,13 +50,7 @@ http3 = [
 ]
 
 [dependencies]
-async-net = "2.0.0"
-base64 = { version = "0.23.1", default-features = false }
 bytes = "1.12.1"
-clap = { version = "4.6.6", default-features = false, features = [
-  "std",
-  "derive",
-] }
 crossfire = { version = "3.1.20", features = ["async_std"] }
 futures-lite = { version = "2.6.1", default-features = false }
 futures-rustls = { version = "0.26.0", optional = true, default-features = false }
@@ -75,29 +69,19 @@ hyper-util = { version = "0.1.21", default-features = false, features = [
   "http1",
 ] }
 log = "0.4.34"
-logforth = { version = "0.30.1", features = ["starter-log"] }
 papaya = "0.2.5"
-patricia_tree = "0.10.2"
-peekable = { version = "0.6.2", features = ["future"] }
+#peekable = { version = "0.6.2", features = ["future"] }
 quinn = { version = "0.11.11", optional = true, default-features = false }
 rand = { version = "0.10.3", default-features = false }
-regex = { version = "1.12.4", default-features = false }
-rustls = { version = "0.23.45", optional = true, default-features = false }
+rustls = { version = "0.23.46", optional = true, default-features = false }
 see = "0.1.2"
-serde = "1.0.228"
-serde_yaml_ng = "0.10.0"
 smol = { version = "2.0.2", default-features = false }
 smol-hyper = { version = "0.1.1", default-features = false }
 smol-macros = { version = "0.1.1", default-features = false }
-socket2 = "0.6.4"
-thiserror = "2.0.21"
-time = { version = "0.3.55", features = ["formatting"] }
-typetag = "0.2.22"
-url = "2.5.7"
-vetis = { version = "0.1.7-beta.5", default-features = false }
+vetis = { version = "0.1.7-beta.6", default-features = false }
 
 [dev-dependencies]
-deboa = { version = "0.1.5-beta.3" }
+deboa = { version = "0.1.5-beta.5" }
 deboa-smol = { version = "0.1.4-beta.2", default-features = false, features = [
   "http2",
   #"http3",

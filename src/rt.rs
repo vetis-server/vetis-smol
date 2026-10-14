@@ -98,7 +98,8 @@ async fn add_host_to_listeners(
                 listener
                     .reserve_port()
                     .await?;
-            } else {
+            // Got an port assigned to TCP listener, use same on UDP listener
+            } else if port > 0 {
                 listener.reassign_port(port);
             }
 
