@@ -1,6 +1,6 @@
 [package]
 name = "vetis-smol"
-version = "0.1.2-beta.2"
+version = "0.1.2-beta.3"
 authors = ["Rogerio Araújo <rogerio.araujo@gmail.com>"]
 edition = "2024"
 repository = "https://github.com/vetis-server/vetis-smol"
@@ -12,14 +12,11 @@ keywords = ["http", "networking", "smol", "rest-server"]
 publish = true
 rust-version = "1.85.0"
 
+[package.metadata.cargo-machete]
+ignored = ["peekable"]
+
 [package.metadata.docs.rs]
 all-features = true
-
-[package.metadata.wix]
-upgrade-guid = "76DF79DF-E1F9-40A7-89D1-3190562C7851"
-path-guid = "FEA82F70-7E57-447F-A361-76FB5E25BA5F"
-license = false
-eula = false
 
 [features]
 default = [

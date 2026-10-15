@@ -7,9 +7,13 @@ use futures_lite::StreamExt;
 use futures_util::{FutureExt, stream::FuturesUnordered};
 use h3_quinn::quinn::{self, crypto::rustls::QuicServerConfig};
 use papaya::HashMap;
-use quinn::{Connection, Endpoint};
+use quinn::{Connection, Endpoint, EndpointConfig, default_runtime};
 use smol::Task;
-use std::{hash::Hash, net::SocketAddr, sync::Arc};
+use std::{
+    hash::Hash,
+    net::{SocketAddr, UdpSocket},
+    sync::Arc,
+};
 use vetis::{
     LogSender, VetisResult, error,
     errors::{ListenerError, StartError, VetisError},
@@ -23,7 +27,7 @@ pub struct UdpListener {
     config: ListenerConfig,
     hosts: VetisHosts<Host>,
     signal: Option<see::sync::Sender<bool>>,
-    inner: Option<Endpoint>,
+    inner: Option<UdpSocket>,
     logger: Option<Logger<LogSender>>,
     handle: Option<Task<VetisResult<()>>>,
 }
@@ -81,23 +85,6 @@ impl UdpListener {
             handle: None,
         }
     }
-
-    async fn create_inner_listener(&mut self) -> VetisResult<Endpoint> {
-        let addr = SocketAddr::new(
-            *self
-                .config
-                .interface(),
-            self.config.port(),
-        );
-
-        let tls_config = TlsFactory::create_tls_config(self.hosts.clone()).await?;
-        let quic_config = QuicServerConfig::try_from(tls_config)
-            .map_err(|e| VetisError::Start(StartError::Tls(e.to_string())))?;
-        let server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
-
-        quinn::Endpoint::server(server_config, addr)
-            .map_err(|e| VetisError::Listener(ListenerError::Bind(e.to_string())))
-    }
 }
 
 impl vetis::listener::Listener for UdpListener {
@@ -106,24 +93,22 @@ impl vetis::listener::Listener for UdpListener {
 
     fn add_host(&mut self, host: Arc<Self::RuntimeHost>) -> VetisResult<()> {
         // Add a host
-        let hosts = self
-            .hosts
-            .pin_owned();
         let hostname = match self.config.port() {
             443 => host
                 .hostname()
                 .to_string(),
             _ => format!("{}:{}", host.hostname(), self.config().port()),
         };
-        hosts.insert(hostname, host.clone());
+        self.hosts
+            .pin()
+            .insert(hostname, host.clone());
         Ok(())
     }
 
     fn remove_host(&mut self, hostname: &str) -> VetisResult<()> {
-        let hosts = self
-            .hosts
-            .pin_owned();
-        hosts.remove(hostname);
+        self.hosts
+            .pin()
+            .remove(hostname);
         Ok(())
     }
 
@@ -137,9 +122,13 @@ impl vetis::listener::Listener for UdpListener {
 
     async fn reserve_port(&mut self) -> VetisResult<()> {
         if self.config.port() == 0 {
-            let listener = self
-                .create_inner_listener()
-                .await?;
+            let listener = UdpSocket::bind((
+                self.config
+                    .interface()
+                    .to_string(),
+                self.config.port(),
+            ))
+            .map_err(|e| VetisError::Listener(ListenerError::Bind(e.to_string())))?;
 
             let local_addr = listener
                 .local_addr()
@@ -165,16 +154,35 @@ impl vetis::listener::Listener for UdpListener {
 
     async fn listen(&mut self) -> VetisResult<()> {
         info!(&self.logger, "UDP listener started...");
-        let listener = if let Some(listener) = self.inner.take() {
-            listener
+        let addr = SocketAddr::new(
+            *self
+                .config
+                .interface(),
+            0,
+        );
+
+        let socket = if let Some(socket) = self.inner.take() {
+            socket
         } else {
-            self.create_inner_listener()
-                .await?
+            UdpSocket::bind(addr).map_err(|e| VetisError::Bind(e.to_string()))?
         };
 
         let (shut_sender, shut_recv) = see::sync::channel(false);
         let shut_signal = shut_recv.clone();
         let logger = self.logger.clone();
+
+        let tls_config = TlsFactory::create_tls_config(self.hosts.clone()).await?;
+        let quic_config = QuicServerConfig::try_from(tls_config)
+            .map_err(|e| VetisError::Start(StartError::Tls(e.to_string())))?;
+        let server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
+
+        let runtime =
+            default_runtime().ok_or_else(|| VetisError::Bind("no async runtime found".into()))?;
+
+        let listener =
+            Endpoint::new(EndpointConfig::default(), Some(server_config), socket, runtime)
+                .map_err(|e| VetisError::Bind(e.to_string()))?;
+
         let mut dispatcher = ConnectionDispatcher::new(
             listener,
             self.hosts.clone(),
