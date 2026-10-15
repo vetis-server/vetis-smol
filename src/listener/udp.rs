@@ -154,16 +154,15 @@ impl vetis::listener::Listener for UdpListener {
 
     async fn listen(&mut self) -> VetisResult<()> {
         info!(&self.logger, "UDP listener started...");
-        let addr = SocketAddr::new(
-            *self
-                .config
-                .interface(),
-            0,
-        );
-
         let socket = if let Some(socket) = self.inner.take() {
             socket
         } else {
+            let addr = SocketAddr::new(
+                *self
+                    .config
+                    .interface(),
+                self.config.port(),
+            );
             UdpSocket::bind(addr).map_err(|e| VetisError::Bind(e.to_string()))?
         };
 
