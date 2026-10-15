@@ -1,6 +1,6 @@
 [package]
 name = "vetis-smol"
-version = "0.1.2-beta.3"
+version = "0.1.2-beta.4"
 authors = ["Rogerio Araújo <rogerio.araujo@gmail.com>"]
 edition = "2024"
 repository = "https://github.com/vetis-server/vetis-smol"
@@ -79,9 +79,9 @@ vetis = { version = "0.1.7-beta.6", default-features = false }
 
 [dev-dependencies]
 deboa = { version = "0.1.5-beta.5" }
-deboa-smol = { version = "0.1.4-beta.2", default-features = false, features = [
+deboa-smol = { version = "0.1.4-beta.4", default-features = false, features = [
   "http2",
-  #"http3",
+  "http3",
   "rust-tls",
   "default-rustls-provider",
   "default-rustls-verifier",
