@@ -34,13 +34,14 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let mut buf = [0u8; BUF_SIZE];
+        let mut buf = vec![0u8; BUF_SIZE];
         match pin!(&mut self.reader).poll_read(cx, &mut buf) {
             Poll::Ready(Ok(n)) => {
-                if BUF_SIZE - n == 0 || n < BUF_SIZE {
-                    return Poll::Ready(Some(Ok(Bytes::copy_from_slice(&buf))));
+                if n == 0 {
+                    return Poll::Ready(None::<Self::Item>);
                 }
-                Poll::Ready(None::<Self::Item>)
+                buf.truncate(n);
+                Poll::Ready(Some(Ok(buf.into())))
             }
             Poll::Ready(Err(e)) => Poll::Ready(Some(Err(Error::new(ErrorKind::Other, e)))),
             Poll::Pending => Poll::Pending,
