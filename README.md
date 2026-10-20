@@ -1,4 +1,4 @@
-# VeTiS Tokio (Very Tiny Server with smol runtime support)
+# VeTiS Smol (Very Tiny Server with smol runtime support)
 
 [![Crates.io downloads](https://img.shields.io/crates/d/vetis-smol)](https://crates.io/crates/vetis-smol) [![crates.io](https://img.shields.io/crates/v/vetis-smol?style=flat-square)](https://crates.io/crates/vetis-smol) [![Build Status](https://github.com/vetis-server/vetis-smol/actions/workflows/rust.yml/badge.svg?event=push)](https://github.com/vetis-server/vetis-smol/actions/workflows/rust.yml) ![Crates.io MSRV](https://img.shields.io/crates/msrv/vetis-smol) [![Documentation](https://docs.rs/vetis-smol/badge.svg)](https://docs.rs/vetis-smol/latest/vetis-smol) [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/vetis-server/vetis-smol/blob/main/LICENSE.md)  [![codecov](https://codecov.io/gh/vetis-server/vetis-smol/graph/badge.svg?token=T0HSBAPVSI)](https://codecov.io/gh/vetis-server/vetis-smol)
 
@@ -18,11 +18,13 @@ vetis = { version = "0.1.0" }
 
 ## External crates
 
-- vetis-static
-- vetis-rev-proxy
-- vetis-fash
+- vetis-auth
+- vetis-flash
 - vetis-log
-- auth
+- vetis-proxy
+- vetis-rhai
+- vetis-rev-proxy
+- vetis-static
 
 ## Usage Example
 
