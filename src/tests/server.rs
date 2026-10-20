@@ -4,8 +4,7 @@ use crate::{
         path::{HandlerPath, handler_fn},
     },
     tests::{
-        CA_CERT, IP6_SERVER_CERT, IP6_SERVER_KEY, SERVER_CERT, SERVER_KEY, create_hello_handler,
-        create_host, default_protocol_version,
+        CA_CERT, IP6_SERVER_CERT, IP6_SERVER_KEY, SERVER_CERT, SERVER_KEY, default_protocol_version,
     },
 };
 use deboa::{
@@ -17,6 +16,8 @@ use http::{StatusCode, Version};
 use macro_rules_attribute::apply;
 use rand::random_range;
 use smol_macros::test;
+#[cfg(feature = "http3")]
+use vetis::listener::Listener as _;
 use vetis::{VetisServer, VetisTestResult, host::HostConfig, security::TlsConfig};
 
 #[apply(test)]
@@ -113,6 +114,75 @@ async fn test_http() -> VetisTestResult<()> {
     Ok(())
 }
 
+#[cfg(feature = "http3")]
+#[apply(test)]
+async fn test_http3() -> VetisTestResult<()> {
+    let tls = TlsConfig::builder()
+        .ca_file(CA_CERT)
+        .cert_file(SERVER_CERT)
+        .key_file(SERVER_KEY)
+        .build()?;
+    let host_config = HostConfig::builder()
+        .hostname("localhost")
+        .tls(tls)
+        .protos(&[Version::HTTP_3])
+        .header("x-vetis-test", "http3")
+        .bind_addresses(&[(
+            "0.0.0.0"
+                .parse()
+                .unwrap(),
+            0,
+        )])
+        .build()?;
+    let mut host = Host::new(host_config).await?;
+    host.add_path(
+        HandlerPath::builder()
+            .uri("/hello")
+            .handler(handler_fn(|_request, _ctx| async move {
+                Ok(vetis::Response::builder()
+                    .status(StatusCode::OK)
+                    .text("Hello from HTTP/3"))
+            }))
+            .build()?,
+    );
+    let mut server = crate::Vetis::builder()
+        .add_host(host)
+        .await?
+        .build();
+    let port = server.listeners()[0]
+        .config()
+        .port();
+
+    server
+        .start()
+        .await?;
+
+    let cert = smol::fs::read(CA_CERT).await?;
+    let client = Client::builder()
+        .certificate(DeboaCertificate::from_slice(&cert, ContentEncoding::DER))
+        .protos(vec![Version::HTTP_3])
+        .prior_knowledge(true)
+        .build();
+    let response = request::get(format!("https://localhost:{port}/hello"))?
+        .version(Version::HTTP_3)
+        .send_with(&client)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-vetis-test"], "http3");
+    assert_eq!(
+        response
+            .text()
+            .await?,
+        "Hello from HTTP/3"
+    );
+
+    server
+        .stop()
+        .await?;
+    Ok(())
+}
+
 #[apply(test)]
 async fn test_http_redirects_to_tls_when_hsts_is_enabled() -> VetisTestResult<()> {
     let port = random_range(9000..=20000);
@@ -169,9 +239,23 @@ async fn test_http_redirects_to_tls_when_hsts_is_enabled() -> VetisTestResult<()
 #[apply(test)]
 async fn test_unknown_host() -> VetisTestResult<()> {
     let port = random_range(9000..=20000);
-    let host =
-        create_host(create_hello_handler(), "localhost", port, CA_CERT, SERVER_CERT, SERVER_KEY)
-            .await?;
+    let tls = TlsConfig::builder()
+        .ca_file(CA_CERT)
+        .cert_file(SERVER_CERT)
+        .key_file(SERVER_KEY)
+        .build()?;
+    let host_config = HostConfig::builder()
+        .hostname("localhost")
+        .tls(tls)
+        .protos(&[Version::HTTP_11])
+        .bind_addresses(&[(
+            "0.0.0.0"
+                .parse()
+                .unwrap(),
+            port,
+        )])
+        .build()?;
+    let host = Host::new(host_config).await?;
     let mut server = crate::Vetis::builder()
         .add_host(host)
         .await?

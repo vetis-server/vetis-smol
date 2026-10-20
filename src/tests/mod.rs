@@ -15,6 +15,8 @@ mod listener;
 mod paths;
 #[cfg(target_os = "linux")]
 mod server;
+#[cfg(feature = "http3")]
+mod service;
 mod tls;
 
 pub(crate) const CA_CERT: &str = "certs/ca.der";

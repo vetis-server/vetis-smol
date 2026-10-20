@@ -8,7 +8,10 @@ use crate::{
 use http::StatusCode;
 use macro_rules_attribute::apply;
 use smol_macros::test;
-use vetis::{Response, VetisServer as _, VetisTestResult, host::HostConfig, listener::Listener};
+use vetis::{
+    Response, VetisServer as _, VetisTestResult, host::HostConfig, listener::Listener,
+    server::ServerConfig,
+};
 
 #[apply(test)]
 async fn test_vetis_add_host() -> VetisTestResult<()> {
@@ -57,6 +60,48 @@ async fn test_vetis_start_no_hosts() -> VetisTestResult<()> {
     let mut server = Vetis::default();
     let result = server.start().await;
     assert!(result.is_err());
+    Ok(())
+}
+
+#[apply(test)]
+async fn test_vetis_stop_no_hosts() -> VetisTestResult<()> {
+    assert!(
+        Vetis::default()
+            .stop()
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[apply(test)]
+async fn test_vetis_from_config_reserves_ephemeral_port() -> VetisTestResult<()> {
+    let host_config = HostConfig::builder()
+        .hostname("localhost")
+        .bind_addresses(&[(
+            "0.0.0.0"
+                .parse()
+                .unwrap(),
+            0,
+        )])
+        .build()?;
+    let server_config = ServerConfig::builder()
+        .add_host(host_config)
+        .build()?;
+    let server = Vetis::from_config(server_config).await?;
+
+    assert_eq!(
+        server
+            .listeners()
+            .len(),
+        1
+    );
+    assert_ne!(
+        server.listeners()[0]
+            .config()
+            .port(),
+        0
+    );
     Ok(())
 }
 
