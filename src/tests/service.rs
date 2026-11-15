@@ -1,8 +1,6 @@
 use crate::{
-    host::{
-        Host,
-        path::{HandlerFn, HandlerPath},
-    },
+    hook::{HandlerFn, HandlerHook},
+    host::Host,
     service::quic::HttpService,
 };
 use http::StatusCode;
@@ -12,6 +10,7 @@ use macro_rules_attribute::apply;
 use smol_macros::test;
 use std::{net::SocketAddr, sync::Arc};
 use vetis::{VetisHosts, errors::VetisError, host::HostConfig};
+use vetis_matchers::request::{PathMatcher, PathMatcherConfig};
 
 async fn create_service(
     handler: HandlerFn,
@@ -22,9 +21,13 @@ async fn create_service(
         config = config.header(name, value);
     }
     let mut host = Host::new(config.build()?).await?;
-    host.add_path(
-        HandlerPath::builder()
-            .uri("/ok")
+    host.add_hook(
+        HandlerHook::builder()
+            .matcher(PathMatcher::new(
+                PathMatcherConfig::builder()
+                    .add_path("/ok*")
+                    .build()?,
+            ))
             .handler(handler)
             .build()?,
     );
@@ -76,7 +79,7 @@ async fn http_service_returns_bad_request_for_unknown_host() {
 
 #[apply(test)]
 async fn http_service_maps_handler_errors_to_internal_server_error() {
-    let handler = crate::tests::handler_fn(|_request, _context| async move {
+    let handler = crate::tests::handler_fn(|_request| async move {
         Err(VetisError::Worker("handler failed".into()))
     });
     let service = create_service(handler, &[])
