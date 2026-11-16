@@ -82,7 +82,6 @@ rustls = { version = "0.23.46", optional = true, default-features = false }
 see = "0.1.2"
 smol = { version = "2.0.2", default-features = false }
 smol-hyper = { version = "0.1.1", default-features = false }
-smol-macros = { version = "0.1.1", default-features = false }
 vetis = { path = "../vetis/vetis", default-features = false, features = ["multi-threaded"] }
 vetis-matchers = { path = "../vetis-matchers" }
 
