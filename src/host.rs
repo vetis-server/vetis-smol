@@ -345,23 +345,30 @@ impl vetis::host::Host for Host {
 
             for hook in &self.hooks {
                 if hook.has_matches(&expr_context) {
-                    let result = match hook.phases() {
-                        phases
-                            if phases.contains(HookPhase::PreProcess)
-                                || phases.contains(HookPhase::Rewrite)
-                                || phases.contains(HookPhase::Access)
-                                || phases.contains(HookPhase::Content) && response.is_none() =>
-                        {
-                            hook.handle(request, response)
-                                .await
-                        }
-                        phases if phases.contains(HookPhase::PostContent) => {
-                            hook.handle(request, response)
-                                .await
-                        }
-                        _ => {
-                            continue;
-                        }
+                    let result = if (hook
+                        .phases()
+                        .contains(HookPhase::PreProcess)
+                        || hook
+                            .phases()
+                            .contains(HookPhase::Rewrite)
+                        || hook
+                            .phases()
+                            .contains(HookPhase::Access)
+                        || hook
+                            .phases()
+                            .contains(HookPhase::Content))
+                        && response.is_none()
+                    {
+                        hook.handle(request, response)
+                            .await
+                    } else if hook
+                        .phases()
+                        .contains(HookPhase::PostContent)
+                    {
+                        hook.handle(request, response)
+                            .await
+                    } else {
+                        continue;
                     };
 
                     if let Err(VetisError::Host(HostError::Runtime(e))) = result {

@@ -9,7 +9,7 @@ use hyper_body_utils::HttpBody;
 use macro_rules_attribute::apply;
 use smol_macros::test;
 use std::{net::SocketAddr, sync::Arc};
-use vetis::{VetisHosts, errors::VetisError, host::HostConfig};
+use vetis::{VetisHosts, errors::RuntimeError, host::HostConfig};
 use vetis_matchers::request::{PathMatcher, PathMatcherConfig};
 
 async fn create_service(
@@ -80,7 +80,7 @@ async fn http_service_returns_bad_request_for_unknown_host() {
 #[apply(test)]
 async fn http_service_maps_handler_errors_to_internal_server_error() {
     let handler = crate::tests::handler_fn(|_request| async move {
-        Err(VetisError::Worker("handler failed".into()))
+        Err(RuntimeError::new("handler failed").into())
     });
     let service = create_service(handler, &[])
         .await
