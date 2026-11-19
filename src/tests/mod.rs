@@ -1,11 +1,12 @@
 #![allow(unreachable_code, dead_code)]
-use crate::host::{
-    Host,
-    path::{HandlerFn, HandlerPath, handler_fn},
+use crate::{
+    hook::{HandlerFn, HandlerHook, handler_fn},
+    host::Host,
 };
 use http::{StatusCode, Version};
 use vetis::{host::HostConfig, security::TlsConfig};
 use vetis_macros::status_pages;
+use vetis_matchers::request::{PathMatcher, PathMatcherConfig};
 
 mod host;
 mod io;
@@ -19,13 +20,15 @@ mod server;
 mod service;
 mod tls;
 
-pub(crate) const CA_CERT: &str = "certs/ca.der";
-pub(crate) const SERVER_CERT: &str = "certs/server.der";
-pub(crate) const SERVER_KEY: &str = "certs/server.key.der";
-pub(crate) const IP6_SERVER_CERT: &str = "certs/ip6-server.der";
-pub(crate) const IP6_SERVER_KEY: &str = "certs/ip6-server.key.der";
+pub(crate) const CA_CERT: &str = "files/certs/ca.der";
+pub(crate) const SERVER_CERT: &str = "files/certs/server.der";
+pub(crate) const SERVER_KEY: &str = "files/certs/server.key.der";
+pub(crate) const IP6_SERVER_CERT: &str = "files/certs/ip6-server.der";
+pub(crate) const IP6_SERVER_KEY: &str = "files/certs/ip6-server.key.der";
 
 pub(crate) const fn default_protocol_version() -> Version {
+    #[cfg(not(any(feature = "http2", feature = "http3")))]
+    return Version::HTTP_11;
     #[cfg(feature = "http2")]
     return Version::HTTP_2;
     #[cfg(feature = "http3")]
@@ -33,7 +36,7 @@ pub(crate) const fn default_protocol_version() -> Version {
 }
 
 fn create_hello_handler() -> HandlerFn {
-    handler_fn(|_request, _ctx| async move {
+    handler_fn(|_request| async move {
         let response = vetis::Response::builder()
             .status(StatusCode::OK)
             .text("Hello from localhost");
@@ -71,14 +74,18 @@ async fn create_host(
         )])
         .build()?;
 
-    let root_path = HandlerPath::builder()
-        .uri("/hello")
+    let root_path = HandlerHook::builder()
+        .matcher(PathMatcher::new(
+            PathMatcherConfig::builder()
+                .add_path("/hello*")
+                .build()?,
+        ))
         .handler(handler)
         .build()?;
 
     let mut host = Host::new(host_config).await?;
 
-    host.add_path(root_path);
+    host.add_hook(root_path);
 
     Ok(host)
 }

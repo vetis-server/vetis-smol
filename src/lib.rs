@@ -3,6 +3,8 @@
 #[cfg(all(any(feature = "http2", feature = "http3"), not(feature = "rust-tls")))]
 compile_error!("http2 and http3 requires rust-tls!");
 
+/// Hook module
+pub mod hook;
 /// Host module
 pub mod host;
 /// IO module

@@ -1,10 +1,12 @@
 use crate::rt::SmolExecutor;
 use crate::{host::Host, service::http::HttpService};
+use compact_str::ToCompactString;
 use crossfire::{AsyncRxTrait, MAsyncRx, mpmc::Array};
 use futures_rustls::TlsAcceptor;
 use futures_util::FutureExt;
 use hyper_util::server::conn::auto;
 use papaya::HashMap;
+use peekable::future::AsyncPeekable;
 use smol::Task;
 use smol::net::TcpStream;
 use smol_hyper::rt::FuturesIo;
@@ -70,11 +72,12 @@ impl TcpWorker {
                 return Err(VetisError::Worker("Unkown client address".into()));
             };
 
+            let mut peekable = AsyncPeekable::from(tcp_stream);
             let mut buf = [0; 2];
-            tcp_stream
-                .peek(&mut buf)
+            peekable
+                .peek_exact(&mut buf)
                 .await
-                .map_err(|e| VetisError::Worker(e.to_string()))?;
+                .map_err(|e| VetisError::worker(e.to_compact_string()))?;
 
             let service = HttpService::new(self.hosts.clone(), client_addr, self.logger.clone());
             let is_tls = buf.starts_with(&[0x16, 0x03]);
@@ -87,9 +90,9 @@ impl TcpWorker {
                 let shut_signal = shut_send.subscribe();
                 smol::spawn(async move {
                     let tls_stream = tls_acceptor
-                        .accept(tcp_stream)
+                        .accept(peekable)
                         .await
-                        .map_err(|e| VetisError::Worker(e.to_string()))?;
+                        .map_err(|e| VetisError::worker(e.to_compact_string()))?;
 
                     let builder = auto::Builder::new(SmolExecutor::new());
                     futures_util::select! {
@@ -99,7 +102,7 @@ impl TcpWorker {
                         }
                         res = builder.serve_connection_with_upgrades(FuturesIo::new(tls_stream), service).fuse() => {
                             conns.pin().remove(&client_addr);
-                            res.map_err(|e| VetisError::Worker(e.to_string()))
+                            res.map_err(|e| VetisError::worker(e.to_compact_string()))
                         }
                     }
                 })
@@ -116,9 +119,9 @@ impl TcpWorker {
                             info!(logger, "Closing connection {}...", client_addr);
                             Ok(())
                         }
-                        res = builder.serve_connection_with_upgrades(FuturesIo::new(tcp_stream), service).fuse() => {
+                        res = builder.serve_connection_with_upgrades(FuturesIo::new(peekable), service).fuse() => {
                             conns.pin().remove(&client_addr);
-                            res.map_err(|e| VetisError::Worker(e.to_string()))
+                            res.map_err(|e| VetisError::worker(e.to_compact_string()))
                         }
                     }
                 })
