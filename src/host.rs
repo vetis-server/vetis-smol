@@ -18,7 +18,7 @@ use vetis::{
     hook::{Hook, HookConfig, HookPhase},
     host::HostConfig,
     log::Logger,
-    security::Tls,
+    security::{Tls, TlsConfig},
 };
 use vetis_matchers::expr::extensions;
 
@@ -33,12 +33,92 @@ pub struct Host {
 unsafe impl Send for Host {}
 unsafe impl Sync for Host {}
 
-// TODO: Add a method on host to set an Arc with a hashmap of links
-// so a path can pick a link and set himself as a sender to a worker of
-// interest.
+async fn build_tls(tls_config: &TlsConfig, host_config: &HostConfig) -> VetisResult<Option<Tls>> {
+    if let Some(root_dir) = host_config.root_directory() {
+        let cert_path = if tls_config
+            .cert_file()
+            .is_relative()
+        {
+            PathBuf::from_iter([root_dir, tls_config.cert_file()])
+        } else {
+            tls_config
+                .cert_file()
+                .to_path_buf()
+        };
 
-// TODO: A host hold a list of services and workers he can provide.
-// A path is responsive to subscribe to them
+        if !cert_path.exists() {
+            return Err(VetisError::Config(ConfigError::tls("Certificate not found!")));
+        }
+
+        let cert = fs::read(cert_path)
+            .await
+            .map_err(|e| {
+                VetisError::Config(ConfigError::tls(format_compact!(
+                    "Could not load certificate: {}",
+                    e.to_string()
+                )))
+            })?;
+        let key_path = if tls_config
+            .key_file()
+            .is_relative()
+        {
+            PathBuf::from_iter([root_dir, tls_config.key_file()])
+        } else {
+            tls_config
+                .key_file()
+                .to_path_buf()
+        };
+
+        if !key_path.exists() {
+            return Err(VetisError::Config(ConfigError::tls("Key not found!")));
+        }
+
+        let key = fs::read(&key_path)
+            .await
+            .map_err(|e| {
+                VetisError::Config(ConfigError::tls(format_compact!(
+                    "Could not load key: {}",
+                    e.to_string()
+                )))
+            })?;
+
+        Ok(Some(Tls::from_cert_and_key(&cert, &key)))
+    } else {
+        if !tls_config
+            .cert_file()
+            .exists()
+        {
+            return Err(VetisError::Config(ConfigError::tls("Certificate not found!")));
+        }
+
+        let cert = fs::read(tls_config.cert_file())
+            .await
+            .map_err(|e| {
+                VetisError::Config(ConfigError::tls(format_compact!(
+                    "Could not load certificate: {}",
+                    e.to_string()
+                )))
+            })?;
+
+        if !tls_config
+            .key_file()
+            .exists()
+        {
+            return Err(VetisError::Config(ConfigError::tls("Key not found!")));
+        }
+
+        let key = fs::read(tls_config.key_file())
+            .await
+            .map_err(|e| {
+                VetisError::Config(ConfigError::tls(format_compact!(
+                    "Could not load key: {}",
+                    e.to_string()
+                )))
+            })?;
+
+        Ok(Some(Tls::from_cert_and_key(&cert, &key)))
+    }
+}
 
 impl Host {
     /// Create a new host
@@ -53,90 +133,8 @@ impl Host {
     pub async fn new(host_config: HostConfig) -> VetisResult<Self> {
         // Initialize TLS
 
-        let tls = if let Some(security_config) = host_config.tls() {
-            if let Some(root_dir) = host_config.root_directory() {
-                let cert_path = if security_config
-                    .cert_file()
-                    .is_relative()
-                {
-                    PathBuf::from_iter([root_dir, security_config.cert_file()])
-                } else {
-                    security_config
-                        .cert_file()
-                        .to_path_buf()
-                };
-
-                if !cert_path.exists() {
-                    return Err(VetisError::Config(ConfigError::tls("Certificate not found!")));
-                }
-
-                let cert = fs::read(cert_path)
-                    .await
-                    .map_err(|e| {
-                        VetisError::Config(ConfigError::tls(format_compact!(
-                            "Could not load certificate: {}",
-                            e.to_string()
-                        )))
-                    })?;
-                let key_path = if security_config
-                    .key_file()
-                    .is_relative()
-                {
-                    PathBuf::from_iter([root_dir, security_config.key_file()])
-                } else {
-                    security_config
-                        .key_file()
-                        .to_path_buf()
-                };
-
-                if !key_path.exists() {
-                    return Err(VetisError::Config(ConfigError::tls("Key not found!")));
-                }
-
-                let key = fs::read(&key_path)
-                    .await
-                    .map_err(|e| {
-                        VetisError::Config(ConfigError::tls(format_compact!(
-                            "Could not load key: {}",
-                            e.to_string()
-                        )))
-                    })?;
-                Some(Tls::from_cert_and_key(&cert, &key))
-            } else {
-                if !security_config
-                    .cert_file()
-                    .exists()
-                {
-                    return Err(VetisError::Config(ConfigError::tls("Certificate not found!")));
-                }
-
-                let cert = fs::read(security_config.cert_file())
-                    .await
-                    .map_err(|e| {
-                        VetisError::Config(ConfigError::tls(format_compact!(
-                            "Could not load certificate: {}",
-                            e.to_string()
-                        )))
-                    })?;
-
-                if !security_config
-                    .key_file()
-                    .exists()
-                {
-                    return Err(VetisError::Config(ConfigError::tls("Key not found!")));
-                }
-
-                let key = fs::read(security_config.key_file())
-                    .await
-                    .map_err(|e| {
-                        VetisError::Config(ConfigError::tls(format_compact!(
-                            "Could not load key: {}",
-                            e.to_string()
-                        )))
-                    })?;
-
-                Some(Tls::from_cert_and_key(&cert, &key))
-            }
+        let tls = if let Some(tls_config) = host_config.tls() {
+            build_tls(tls_config, &host_config).await?
         } else {
             None
         };
@@ -159,19 +157,25 @@ impl Host {
                         .expect("Could not compile matcher!");
                 }
 
-                // Assuming a hook only has one phase, or `Hook` implements Clone / Arc
-                for phase in hook.phases() {
-                    phased_hooks.push((phase, hook_config.boxed_clone())); // or clone
+                for phase in hook.phases().iter() {
+                    phased_hooks.push((phase, hook_config.boxed_clone()));
                 }
             }
         }
 
-        // `sort_by_key` in Rust is a stable sort, preserving config order for equal phases!
         phased_hooks.sort_by_key(|(phase, _)| *phase);
 
         let hooks: Vec<_> = phased_hooks
             .into_iter()
-            .map(|(_, hook_config)| hook_config.boxed_hook())
+            .map(|(_, hook_config)| {
+                let mut hook = hook_config.boxed_hook();
+                if let Some(matcher) = hook.matcher_mut() {
+                    matcher
+                        .compile(env.clone())
+                        .expect("Could not compile matcher!");
+                }
+                hook
+            })
             .collect();
 
         Ok(Self { config: host_config, tls, hooks, env })
@@ -186,11 +190,13 @@ impl Host {
     where
         H: Hook + Send + Sync + 'static,
     {
+        // TODO: Rebuild list of hooks and sort it properly
         if let Some(matcher) = hook.matcher_mut() {
             matcher
                 .compile(self.env.clone())
                 .expect("Could not compile matcher!");
         }
+
         self.hooks
             .push(Box::new(hook));
     }
