@@ -263,12 +263,14 @@ impl vetis::listener::Listener for TcpListener {
             }
         }
 
-        for _handle in self
+        for addr in self
             .connections
             .pin()
-            .values()
+            .keys()
         {
-            //
+            self.connections
+                .pin()
+                .remove(addr);
         }
 
         Ok(())
