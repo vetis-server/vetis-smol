@@ -1,8 +1,6 @@
 use crate::{
-    host::{
-        Host,
-        path::{HandlerFn, HandlerPath},
-    },
+    hook::{HandlerFn, HandlerHook},
+    host::Host,
     service::quic::HttpService,
 };
 use http::StatusCode;
@@ -11,23 +9,30 @@ use hyper_body_utils::HttpBody;
 use macro_rules_attribute::apply;
 use smol_macros::test;
 use std::{net::SocketAddr, sync::Arc};
-use vetis::{VetisHosts, errors::VetisError, host::HostConfig};
+use vetis::{VetisHosts, errors::RuntimeError, host::HostConfig};
+use vetis_matchers::request::{PathMatcher, PathMatcherConfig};
 
 async fn create_service(
     handler: HandlerFn,
     default_headers: &[(&str, &str)],
 ) -> Result<HttpService<Host>, Box<dyn std::error::Error>> {
-    let mut config = HostConfig::builder().hostname("localhost");
+    let mut host_config = HostConfig::builder()
+        .hostname("localhost")
+        .add_hook(
+            HandlerHookConfig::builder()
+                .matcher(
+                    PathMatcherConfig::builder()
+                        .add_path("/ok*")
+                        .build()?,
+                )
+                .handler(handler)
+                .build()?,
+        );
     for (name, value) in default_headers {
-        config = config.header(name, value);
+        host_config = host_config.add_default_header(name, value);
     }
-    let mut host = Host::new(config.build()?).await?;
-    host.add_path(
-        HandlerPath::builder()
-            .uri("/ok")
-            .handler(handler)
-            .build()?,
-    );
+
+    let host = Host::new(host_config.build()?).await?;
 
     let hosts = papaya::HashMap::new();
     hosts
@@ -76,8 +81,8 @@ async fn http_service_returns_bad_request_for_unknown_host() {
 
 #[apply(test)]
 async fn http_service_maps_handler_errors_to_internal_server_error() {
-    let handler = crate::tests::handler_fn(|_request, _context| async move {
-        Err(VetisError::Worker("handler failed".into()))
+    let handler = crate::tests::handler_fn(|_request| async move {
+        Err(RuntimeError::new("handler failed").into())
     });
     let service = create_service(handler, &[])
         .await

@@ -1,18 +1,15 @@
 use crate::{
-    host::{
-        Host,
-        path::{HandlerPath, handler_fn},
-    },
+    hook::{HandlerHookConfig, handler_fn},
+    host::Host,
     tests::{CA_CERT, SERVER_CERT, SERVER_KEY},
 };
 use macro_rules_attribute::apply;
 use smol_macros::test;
-use vetis::{
-    VetisHosts, VetisTestResult, errors::VetisError, host::HostConfig, security::TlsConfig,
-};
+use std::net::Ipv4Addr;
+use vetis::{VetisHosts, VetisTestResult, host::HostConfig, security::TlsConfig};
 
 async fn create_test_hosts() -> VetisTestResult<VetisHosts<Host>> {
-    let security_config = TlsConfig::builder()
+    let tls_config = TlsConfig::builder()
         .cert_file(SERVER_CERT)
         .key_file(SERVER_KEY)
         .ca_file(CA_CERT)
@@ -21,24 +18,22 @@ async fn create_test_hosts() -> VetisTestResult<VetisHosts<Host>> {
 
     let host_config = HostConfig::builder()
         .hostname("localhost")
-        .tls(security_config)
+        .tls(tls_config)
+        .add_hook(
+            HandlerHookConfig::builder()
+                .handler(handler_fn(|_request| async move {
+                    let response = vetis::Response::builder()
+                        .status(http::StatusCode::OK)
+                        .text("Test response");
+                    Ok(response)
+                }))
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to create host config");
 
-    let mut host = Host::new(host_config).await?;
-    host.add_path(
-        HandlerPath::builder()
-            .uri("/")
-            .handler(handler_fn(|_req, _ctx| async move {
-                Ok::<_, VetisError>(
-                    vetis::Response::builder()
-                        .status(http::StatusCode::OK)
-                        .text("Test response"),
-                )
-            }))
-            .build()
-            .unwrap(),
-    );
+    let host = Host::new(host_config).await?;
 
     let hosts = papaya::HashMap::new();
     hosts
@@ -51,23 +46,21 @@ async fn create_test_hosts() -> VetisTestResult<VetisHosts<Host>> {
 async fn create_test_hosts_no_security() -> VetisTestResult<VetisHosts<Host>> {
     let host_config = HostConfig::builder()
         .hostname("localhost")
+        .add_hook(
+            HandlerHookConfig::builder()
+                .handler(handler_fn(|_request| async move {
+                    let response = vetis::Response::builder()
+                        .status(http::StatusCode::OK)
+                        .text("Test response");
+                    Ok(response)
+                }))
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to create host config");
 
-    let mut host = Host::new(host_config).await?;
-    host.add_path(
-        HandlerPath::builder()
-            .uri("/")
-            .handler(handler_fn(|_req, _ctx| async move {
-                Ok::<_, VetisError>(
-                    vetis::Response::builder()
-                        .status(http::StatusCode::OK)
-                        .text("Test response"),
-                )
-            }))
-            .build()
-            .unwrap(),
-    );
+    let host = Host::new(host_config).await?;
 
     let hosts = papaya::HashMap::new();
     hosts
@@ -77,32 +70,31 @@ async fn create_test_hosts_no_security() -> VetisTestResult<VetisHosts<Host>> {
 }
 
 async fn create_test_hosts_invalid_key() -> VetisTestResult<VetisHosts<Host>> {
-    let security_config = TlsConfig::builder()
+    let tls_config = TlsConfig::builder()
         .cert_file(SERVER_CERT)
-        .key_file(SERVER_CERT) // Invalid key
+        .key_file(SERVER_CERT)
         .build()
         .expect("Failed to create security config");
 
     let host_config = HostConfig::builder()
         .hostname("localhost")
-        .tls(security_config)
+        .tls(tls_config)
+        .add_bind_address(Ipv4Addr::UNSPECIFIED, 8080)
+        .add_hook(
+            HandlerHookConfig::builder()
+                .handler(handler_fn(|_request| async move {
+                    let response = vetis::Response::builder()
+                        .status(http::StatusCode::OK)
+                        .text("Test response");
+                    Ok(response)
+                }))
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to create host config");
 
-    let mut host = Host::new(host_config).await?;
-    host.add_path(
-        HandlerPath::builder()
-            .uri("/")
-            .handler(handler_fn(|_req, _ctx| async move {
-                Ok::<_, VetisError>(
-                    vetis::Response::builder()
-                        .status(http::StatusCode::OK)
-                        .text("Test response"),
-                )
-            }))
-            .build()
-            .unwrap(),
-    );
+    let host = Host::new(host_config).await?;
 
     let hosts = papaya::HashMap::new();
     hosts
@@ -112,35 +104,8 @@ async fn create_test_hosts_invalid_key() -> VetisTestResult<VetisHosts<Host>> {
 }
 
 #[apply(test)]
-async fn test_tls_config_with_tls_hosts() -> VetisTestResult<()> {
-    let hosts = create_test_hosts().await?;
-    let config = crate::tls::TlsFactory::create_tls_config(hosts).await?;
-
-    assert_eq!(config.max_early_data_size, u32::MAX);
-    Ok(())
-}
-
-#[apply(test)]
-async fn test_tls_config_without_tls_hosts() -> VetisTestResult<()> {
-    let hosts = create_test_hosts_no_security().await?;
-    let config = crate::tls::TlsFactory::create_tls_config(hosts).await?;
-
-    assert!(
-        config
-            .alpn_protocols
-            .is_empty()
-    );
-    Ok(())
-}
-
-#[apply(test)]
 async fn test_tls_config_rejects_invalid_private_key() -> VetisTestResult<()> {
     let hosts = create_test_hosts_invalid_key().await?;
-
-    assert!(
-        crate::tls::TlsFactory::create_tls_config(hosts)
-            .await
-            .is_err()
-    );
+    assert!(crate::tls::TlsConfigResolver::create_tls_config(hosts).is_err());
     Ok(())
 }

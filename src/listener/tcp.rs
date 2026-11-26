@@ -1,18 +1,18 @@
-use crate::{VetisHosts, host::Host, tls::TlsFactory, worker::tcp::TcpWorker};
-use crossfire::{
-    MAsyncRx, MAsyncTx,
-    mpmc::{self, Array},
-};
-use futures_lite::StreamExt;
-use futures_rustls::TlsAcceptor;
-use futures_util::{FutureExt as _, stream::FuturesUnordered};
+use crate::rt::SmolExecutor;
+use crate::{VetisHosts, host::Host, service::http::HttpService, tls::TlsConfigResolver};
+use compact_str::ToCompactString;
+use futures_rustls::LazyConfigAcceptor;
+use futures_util::FutureExt as _;
+use hyper_util::server::conn::auto;
 use papaya::HashMap;
+use peekable::future::AsyncPeekable;
+use rustls::server::Acceptor;
 use smol::{Task, net::TcpStream};
+use smol_hyper::rt::FuturesIo;
 use std::{hash::Hash, net::SocketAddr, sync::Arc};
 use vetis::{
     LogSender, VetisResult, debug, error,
     errors::{ListenerError, VetisError},
-    host::Host as _,
     info,
     listener::ListenerConfig,
     log::Logger,
@@ -21,11 +21,11 @@ use vetis::{
 /// TCP listener
 pub struct TcpListener {
     config: ListenerConfig,
-    hosts: VetisHosts<Host>,
-    signal: Option<see::sync::Sender<bool>>,
     inner: Option<smol::net::TcpListener>,
     logger: Option<Logger<LogSender>>,
     handle: Option<Task<VetisResult<()>>>,
+    connections: Arc<HashMap<SocketAddr, Task<VetisResult<()>>>>,
+    signal: Option<see::sync::Sender<bool>>,
 }
 
 impl Hash for TcpListener {
@@ -74,12 +74,101 @@ impl TcpListener {
     pub fn new(config: ListenerConfig) -> Self {
         Self {
             config,
-            hosts: VetisHosts::new(HashMap::new()),
             signal: None,
             inner: None,
             logger: None,
             handle: None,
+            connections: HashMap::new().into(),
         }
+    }
+
+    async fn accept(
+        &mut self,
+        tcp_stream: TcpStream,
+        client_addr: SocketAddr,
+        hosts: VetisHosts<Host>,
+        tls_config_resolver: Arc<TlsConfigResolver>,
+    ) -> VetisResult<()> {
+        let (shut_send, _) = see::sync::channel(false);
+        self.signal = Some(shut_send.clone());
+
+        let mut peekable = AsyncPeekable::from(tcp_stream);
+        let mut buf = [0; 2];
+        peekable
+            .peek_exact(&mut buf)
+            .await
+            .map_err(|e| VetisError::tcp(e.to_compact_string()))?;
+
+        let service = HttpService::new(hosts.clone(), client_addr, self.logger.clone());
+        let is_tls = buf.starts_with(&[0x16, 0x03]);
+        let handle = if is_tls {
+            let logger = self.logger.clone();
+            let conns = self
+                .connections
+                .clone();
+            let shut_signal = shut_send.subscribe();
+            smol::spawn(async move {
+                let start_handshake = LazyConfigAcceptor::new(Acceptor::default(), peekable)
+                    .await
+                    .map_err(|e| VetisError::tls(e.to_compact_string()))?;
+                let client_hello = start_handshake.client_hello();
+                let sni = client_hello
+                    .server_name()
+                    .unwrap_or("://example.com");
+
+                let server_config: Arc<rustls::ServerConfig> = if let Some(config) =
+                    tls_config_resolver
+                        .hosts_tls_config
+                        .get(sni)
+                {
+                    config.clone()
+                } else {
+                    return Err(VetisError::tls("Missing host TLS configuration"));
+                };
+
+                let tls_stream = start_handshake
+                    .into_stream(server_config)
+                    .await
+                    .map_err(|e| VetisError::tls(e.to_compact_string()))?;
+
+                let builder = auto::Builder::new(SmolExecutor::new());
+                futures_util::select! {
+                    _ = shut_signal.changed().fuse() => {
+                        info!(logger, "Closing connection {}...", &client_addr);
+                        Ok(())
+                    }
+                    res = builder.serve_connection_with_upgrades(FuturesIo::new(tls_stream), service).fuse() => {
+                        conns.pin().remove(&client_addr);
+                        res.map_err(|e| VetisError::tls(e.to_compact_string()))
+                    }
+                }
+            })
+        } else {
+            let logger = self.logger.clone();
+            let conns = self
+                .connections
+                .clone();
+            let shut_signal = shut_send.subscribe();
+            smol::spawn(async move {
+                let builder = auto::Builder::new(SmolExecutor::new());
+                futures_util::select! {
+                    _ = shut_signal.changed().fuse() => {
+                        info!(logger, "Closing connection {}...", client_addr);
+                        Ok(())
+                    }
+                    res = builder.serve_connection_with_upgrades(FuturesIo::new(peekable), service).fuse() => {
+                        conns.pin().remove(&client_addr);
+                        res.map_err(|e| VetisError::tcp(e.to_compact_string()))
+                    }
+                }
+            })
+        };
+
+        self.connections
+            .pin()
+            .insert(client_addr, handle);
+
+        Ok(())
     }
 }
 
@@ -87,33 +176,8 @@ impl vetis::listener::Listener for TcpListener {
     type RuntimeHost = Host;
     type Logger = Logger<LogSender>;
 
-    fn add_host(&mut self, host: Arc<Self::RuntimeHost>) -> VetisResult<()> {
-        // Add a host
-        let hostname = match self.config.port() {
-            80 | 443 => host
-                .hostname()
-                .to_string(),
-            _ => format!("{}:{}", host.hostname(), self.config().port()),
-        };
-        self.hosts
-            .pin()
-            .insert(hostname, host.clone());
-        Ok(())
-    }
-
-    fn remove_host(&mut self, hostname: &str) -> VetisResult<()> {
-        self.hosts
-            .pin()
-            .remove(hostname);
-        Ok(())
-    }
-
     fn logger(&mut self, logger: Self::Logger) {
         self.logger = Some(logger);
-    }
-
-    fn total_hosts(&self) -> usize {
-        self.hosts.len()
     }
 
     async fn reserve_port(&mut self) -> VetisResult<()> {
@@ -125,11 +189,11 @@ impl vetis::listener::Listener for TcpListener {
                 self.config.port(),
             ))
             .await
-            .map_err(|e| VetisError::Listener(ListenerError::Bind(e.to_string())))?;
+            .map_err(|e| VetisError::Listener(ListenerError::Bind(e.to_compact_string())))?;
 
             let local_addr = listener
                 .local_addr()
-                .map_err(|e| VetisError::Listener(ListenerError::Bind(e.to_string())))?;
+                .map_err(|e| VetisError::Listener(ListenerError::Bind(e.to_compact_string())))?;
 
             self.config
                 .reassign_port(local_addr.port());
@@ -149,7 +213,7 @@ impl vetis::listener::Listener for TcpListener {
         &self.config
     }
 
-    async fn listen(&mut self) -> VetisResult<()> {
+    async fn listen(&mut self, hosts: VetisHosts<Self::RuntimeHost>) -> VetisResult<()> {
         info!(&self.logger, "TCP listener started...");
         let addr = SocketAddr::new(
             *self
@@ -163,32 +227,27 @@ impl vetis::listener::Listener for TcpListener {
         } else {
             smol::net::TcpListener::bind(addr)
                 .await
-                .map_err(|e| VetisError::Bind(e.to_string()))?
+                .map_err(|e| VetisError::bind(e.to_compact_string()))?
         };
 
-        let (sender, receiver) = see::sync::channel(false);
-        let shut_signal = receiver.clone();
-        let logger = self.logger.clone();
-        let mut dispatcher = ConnectionDispatcher::new(
-            listener,
-            self.hosts.clone(),
-            self.config.clone(),
-            self.logger.clone(),
-        );
-        let handle = smol::spawn(async move {
-            futures_util::select! {
-                _ = shut_signal.changed().fuse() => {
-                    info!(logger, "Stopping listener...");
-                    dispatcher.stop().await
-                }
-                res = dispatcher.run().fuse() => res
-            }
-        });
+        let tls_config_resolver = Arc::new(TlsConfigResolver::create_tls_config(hosts.clone())?);
+        loop {
+            let result = listener
+                .accept()
+                .await;
 
-        self.signal = Some(sender);
-        self.handle = Some(handle);
+            let Ok((tcp_stream, _)) = result else {
+                debug!(self.logger, "Cannot accept connection: {:?}", result.err());
+                continue;
+            };
 
-        Ok(())
+            let Ok(client_addr) = tcp_stream.peer_addr() else {
+                return Err(VetisError::tcp("Unkown client address"));
+            };
+
+            self.accept(tcp_stream, client_addr, hosts.clone(), tls_config_resolver.clone())
+                .await?;
+        }
     }
 
     async fn stop(mut self) -> VetisResult<()> {
@@ -203,143 +262,15 @@ impl vetis::listener::Listener for TcpListener {
                 }
             }
         }
-        Ok(())
-    }
-}
 
-struct ConnectionDispatcher {
-    listener: smol::net::TcpListener,
-    hosts: VetisHosts<Host>,
-    config: ListenerConfig,
-    signal: Option<see::sync::Sender<bool>>,
-    logger: Option<Logger<LogSender>>,
-    workers: FuturesUnordered<Task<VetisResult<()>>>,
-    sender: Option<MAsyncTx<Array<TcpStream>>>,
-}
-
-unsafe impl Send for ConnectionDispatcher {}
-
-/// Decompose the TCP listener into smaller, more manageable structs
-impl ConnectionDispatcher {
-    pub fn new(
-        listener: smol::net::TcpListener,
-        hosts: VetisHosts<Host>,
-        config: ListenerConfig,
-        logger: Option<Logger<LogSender>>,
-    ) -> Self {
-        Self {
-            listener,
-            hosts,
-            config,
-            signal: None,
-            logger,
-            workers: FuturesUnordered::new(),
-            sender: None,
-        }
-    }
-
-    async fn init(&mut self, receiver: MAsyncRx<Array<TcpStream>>) -> VetisResult<()> {
-        info!(&self.logger, "Initializing tcp workers...");
-        let (shut_sender, shut_recv) = see::sync::channel(false);
-        let tls_config = TlsFactory::create_tls_config(self.hosts.clone()).await?;
-        let tls_acceptor = TlsAcceptor::from(tls_config.clone());
-        for worker_num in 1..=self
-            .config
-            .workers()
+        for addr in self
+            .connections
+            .pin()
+            .keys()
         {
-            info!(&self.logger, "Initializing tcp worker: {}", worker_num);
-            // TODO: Check ACL before proceeding
-            let mut worker = TcpWorker::new(
-                worker_num,
-                tls_acceptor.clone(),
-                self.hosts.clone(),
-                self.logger.clone(),
-                receiver.clone(),
-            );
-
-            let shut_signal = shut_recv.clone();
-            let logger = self.logger.clone();
-            let worker_future = async move {
-                futures_util::select! {
-                    _ = shut_signal.changed().fuse() => {
-                        info!(logger, "Stopping tcp worker {}...", worker.id());
-                        worker.stop().await
-                    },
-                    res = worker.run().fuse() => res
-                }
-            };
-
-            self.workers
-                .push(smol::spawn(worker_future));
-        }
-
-        self.signal = Some(shut_sender);
-
-        Ok(())
-    }
-
-    async fn run(&mut self) -> VetisResult<()> {
-        let (dispatch_sender, dispatch_recv) = mpmc::bounded_async::<TcpStream>(
-            self.config
-                .workers(),
-        );
-
-        if let Err(e) = self
-            .init(dispatch_recv.clone())
-            .await
-        {
-            error!(self.logger, "Could not start workers: {}", e.to_string())
-        }
-
-        self.sender = Some(dispatch_sender);
-
-        loop {
-            let Ok((tcp_stream, _)) = self
-                .listener
-                .accept()
-                .await
-            else {
-                debug!(
-                    self.logger,
-                    "Cannot accept connection: {:?}",
-                    self.listener
-                        .accept()
-                        .await
-                        .err()
-                );
-
-                continue;
-            };
-
-            if let Some(sender) = self.sender.as_ref()
-                && let Err(e) = sender
-                    .send(tcp_stream)
-                    .await
-            {
-                error!(self.logger, "Could not distribute connection: {}", e.to_string())
-            }
-        }
-    }
-
-    // Initiate graceful shutdown and complete tasks
-    pub async fn stop(mut self) -> VetisResult<()> {
-        if let Some(signal) = self.signal.take() {
-            let _ = signal.send(true);
-        }
-
-        while let Some(handle) = self
-            .workers
-            .next()
-            .await
-        {
-            match handle {
-                Ok(_) => {
-                    info!(&self.logger, "TCP worker stopped successfully!");
-                }
-                Err(e) => {
-                    error!(self.logger, "Internal error: {:?}", e);
-                }
-            }
+            self.connections
+                .pin()
+                .remove(addr);
         }
 
         Ok(())

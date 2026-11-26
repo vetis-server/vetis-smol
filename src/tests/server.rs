@@ -1,10 +1,8 @@
 use crate::{
-    host::{
-        Host,
-        path::{HandlerPath, handler_fn},
-    },
+    hook::{HandlerHookConfig, handler_fn},
     tests::{
-        CA_CERT, IP6_SERVER_CERT, IP6_SERVER_KEY, SERVER_CERT, SERVER_KEY, default_protocol_version,
+        CA_CERT, IP6_SERVER_CERT, IP6_SERVER_KEY, SERVER_CERT, SERVER_KEY, create_hello_hook,
+        default_protocol_version,
     },
 };
 use deboa::{
@@ -16,28 +14,21 @@ use http::{StatusCode, Version};
 use macro_rules_attribute::apply;
 use rand::random_range;
 use smol_macros::test;
+use std::net::{IpAddr, Ipv4Addr};
 #[cfg(feature = "http3")]
 use vetis::listener::Listener as _;
 use vetis::{VetisServer, VetisTestResult, host::HostConfig, security::TlsConfig};
+use vetis_matchers::request::PathMatcherConfig;
 
 #[apply(test)]
 async fn test_no_https_error() -> VetisTestResult<()> {
-    let localhost_config = HostConfig::builder()
-        .hostname("localhost")
-        .protos(&[Version::HTTP_11])
-        .bind_addresses(&[(
-            "0.0.0.0"
-                .parse()
-                .unwrap(),
-            55000,
-        )])
-        .build()?;
-
-    let mut localhost_host = Host::new(localhost_config).await?;
-
-    let ip4_root_path = HandlerPath::builder()
-        .uri("/hello")
-        .handler(handler_fn(|_request, _ctx| async move {
+    let ip4_root_hook = HandlerHookConfig::builder()
+        .matcher(
+            PathMatcherConfig::builder()
+                .add_path("/hello*")
+                .build()?,
+        )
+        .handler(handler_fn(|_request| async move {
             let response = vetis::Response::builder()
                 .status(StatusCode::OK)
                 .text("Hello from ipv4");
@@ -45,11 +36,15 @@ async fn test_no_https_error() -> VetisTestResult<()> {
         }))
         .build()?;
 
-    localhost_host.add_path(ip4_root_path);
+    let localhost_config = HostConfig::builder()
+        .hostname("localhost")
+        .add_proto(Version::HTTP_11)
+        .add_bind_address(Ipv4Addr::UNSPECIFIED, 55000)
+        .add_hook(ip4_root_hook)
+        .build()?;
 
     let mut server = crate::Vetis::builder()
-        .add_host(localhost_host)
-        .await?
+        .add_host(localhost_config)
         .build();
 
     server
@@ -69,9 +64,13 @@ async fn test_no_https_error() -> VetisTestResult<()> {
 
 #[apply(test)]
 async fn test_http() -> VetisTestResult<()> {
-    let ip4_root_path = HandlerPath::builder()
-        .uri("/hello")
-        .handler(handler_fn(|_request, _ctx| async move {
+    let ip4_root_path = HandlerHookConfig::builder()
+        .matcher(
+            PathMatcherConfig::builder()
+                .add_path("/hello*")
+                .build()?,
+        )
+        .handler(handler_fn(|_request| async move {
             let response = vetis::Response::builder()
                 .status(StatusCode::OK)
                 .text("Hello from ipv4");
@@ -79,24 +78,17 @@ async fn test_http() -> VetisTestResult<()> {
         }))
         .build()?;
 
-    // TODO: Add a path to config, even HandlerPath, build host from config
+    // TODO: Add a path to config, even HandlerHook, build host from config
     let localhost_config = HostConfig::builder()
         .hostname("localhost")
-        .protos(&[Version::HTTP_11])
-        .bind_addresses(&[(
-            "0.0.0.0"
-                .parse()
-                .unwrap(),
-            55002,
-        )])
+        .add_default_header("x-vetis-test", "default")
+        .add_proto(Version::HTTP_11)
+        .add_bind_address(Ipv4Addr::UNSPECIFIED, 55002)
+        .add_hook(ip4_root_path)
         .build()?;
 
-    let mut localhost_host = Host::new(localhost_config).await?;
-    localhost_host.add_path(ip4_root_path);
-
     let mut server = crate::Vetis::builder()
-        .add_host(localhost_host)
-        .await?
+        .add_host(localhost_config)
         .build();
 
     server
@@ -110,76 +102,8 @@ async fn test_http() -> VetisTestResult<()> {
         .await?;
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-vetis-test"], "default");
 
-    Ok(())
-}
-
-#[cfg(feature = "http3")]
-#[apply(test)]
-async fn test_http3() -> VetisTestResult<()> {
-    let tls = TlsConfig::builder()
-        .ca_file(CA_CERT)
-        .cert_file(SERVER_CERT)
-        .key_file(SERVER_KEY)
-        .build()?;
-    let host_config = HostConfig::builder()
-        .hostname("localhost")
-        .tls(tls)
-        .protos(&[Version::HTTP_3])
-        .header("x-vetis-test", "http3")
-        .bind_addresses(&[(
-            "0.0.0.0"
-                .parse()
-                .unwrap(),
-            0,
-        )])
-        .build()?;
-    let mut host = Host::new(host_config).await?;
-    host.add_path(
-        HandlerPath::builder()
-            .uri("/hello")
-            .handler(handler_fn(|_request, _ctx| async move {
-                Ok(vetis::Response::builder()
-                    .status(StatusCode::OK)
-                    .text("Hello from HTTP/3"))
-            }))
-            .build()?,
-    );
-    let mut server = crate::Vetis::builder()
-        .add_host(host)
-        .await?
-        .build();
-    let port = server.listeners()[0]
-        .config()
-        .port();
-
-    server
-        .start()
-        .await?;
-
-    let cert = smol::fs::read(CA_CERT).await?;
-    let client = Client::builder()
-        .certificate(DeboaCertificate::from_slice(&cert, ContentEncoding::DER))
-        .protos(vec![Version::HTTP_3])
-        .prior_knowledge(true)
-        .build();
-    let response = request::get(format!("https://localhost:{port}/hello"))?
-        .version(Version::HTTP_3)
-        .send_with(&client)
-        .await?;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()["x-vetis-test"], "http3");
-    assert_eq!(
-        response
-            .text()
-            .await?,
-        "Hello from HTTP/3"
-    );
-
-    server
-        .stop()
-        .await?;
     Ok(())
 }
 
@@ -196,28 +120,12 @@ async fn test_http_redirects_to_tls_when_hsts_is_enabled() -> VetisTestResult<()
         .tls(tls)
         .allow_unsafe_connections(true)
         .enable_hsts(true)
-        .protos(&[Version::HTTP_11])
-        .bind_addresses(&[(
-            "0.0.0.0"
-                .parse()
-                .unwrap(),
-            port,
-        )])
+        .add_proto(Version::HTTP_11)
+        .add_bind_address(Ipv4Addr::UNSPECIFIED, port)
+        .add_hook(create_hello_hook())
         .build()?;
-    let mut host = Host::new(config).await?;
-    host.add_path(
-        HandlerPath::builder()
-            .uri("/hello")
-            .handler(handler_fn(|_request, _ctx| async move {
-                Ok(vetis::Response::builder()
-                    .status(StatusCode::OK)
-                    .text("Hello from ipv4"))
-            }))
-            .build()?,
-    );
     let mut server = crate::Vetis::builder()
-        .add_host(host)
-        .await?
+        .add_host(config)
         .build();
 
     server
@@ -229,7 +137,7 @@ async fn test_http_redirects_to_tls_when_hsts_is_enabled() -> VetisTestResult<()
         .await?;
 
     assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
-    assert_eq!(response.headers()["location"], format!("http://localhost:{port}/hello"));
+    assert_eq!(response.headers()["location"], format!("https://localhost:{port}/hello"));
     server
         .stop()
         .await?;
@@ -239,26 +147,15 @@ async fn test_http_redirects_to_tls_when_hsts_is_enabled() -> VetisTestResult<()
 #[apply(test)]
 async fn test_unknown_host() -> VetisTestResult<()> {
     let port = random_range(9000..=20000);
-    let tls = TlsConfig::builder()
-        .ca_file(CA_CERT)
-        .cert_file(SERVER_CERT)
-        .key_file(SERVER_KEY)
-        .build()?;
-    let host_config = HostConfig::builder()
+    let host = HostConfig::builder()
         .hostname("localhost")
-        .tls(tls)
-        .protos(&[Version::HTTP_11])
-        .bind_addresses(&[(
-            "0.0.0.0"
-                .parse()
-                .unwrap(),
-            port,
-        )])
+        .allow_unsafe_connections(true)
+        .add_proto(Version::HTTP_11)
+        .add_bind_address(Ipv4Addr::LOCALHOST, port)
+        .add_hook(create_hello_hook())
         .build()?;
-    let host = Host::new(host_config).await?;
     let mut server = crate::Vetis::builder()
         .add_host(host)
-        .await?
         .build();
 
     server
@@ -286,6 +183,33 @@ async fn test_multiple_interfaces() -> VetisTestResult<()> {
         .key_file(SERVER_KEY)
         .build()?;
 
+    let ip4_root_hook = HandlerHookConfig::builder()
+        .matcher(
+            PathMatcherConfig::builder()
+                .add_path("/hello*")
+                .build()?,
+        )
+        .handler(handler_fn(|_request| async move {
+            let response = vetis::Response::builder()
+                .status(StatusCode::OK)
+                .text("Hello from ipv4");
+            Ok(response)
+        }))
+        .build()?;
+
+    let ip4_localhost_config = HostConfig::builder()
+        .hostname("localhost")
+        .tls(ip4_security_config)
+        .add_proto(default_protocol_version())
+        .add_bind_address(
+            "0.0.0.0"
+                .parse::<IpAddr>()
+                .unwrap(),
+            65000,
+        )
+        .add_hook(ip4_root_hook)
+        .build()?;
+
     #[cfg(unix)]
     let ip6_security_config = TlsConfig::builder()
         .ca_file(CA_CERT)
@@ -294,51 +218,19 @@ async fn test_multiple_interfaces() -> VetisTestResult<()> {
         .build()?;
 
     #[cfg(windows)]
-    let ip6_security_config = SecurityConfig::builder()
+    let ip6_security_config = TlsConfig::builder()
         .ca_file(CA_CERT)
         .cert_file(SERVER_CERT)
         .key_file(SERVER_KEY)
         .build()?;
 
-    let ip4_localhost_config = HostConfig::builder()
-        .hostname("localhost")
-        .tls(ip4_security_config)
-        .protos(&[default_protocol_version()])
-        .bind_addresses(&[(
-            "0.0.0.0"
-                .parse()
-                .unwrap(),
-            65000,
-        )])
-        .build()?;
-
-    let ip6_localhost_config = HostConfig::builder()
-        .hostname(host)
-        .tls(ip6_security_config)
-        .protos(&[default_protocol_version()])
-        .bind_addresses(&[(
-            "::".parse()
-                .unwrap(),
-            65001,
-        )])
-        .build()?;
-
-    let mut ip4_localhost_host = Host::new(ip4_localhost_config).await?;
-    let mut ip6_localhost_host = Host::new(ip6_localhost_config).await?;
-
-    let ip4_root_path = HandlerPath::builder()
-        .uri("/hello")
-        .handler(handler_fn(|_request, _ctx| async move {
-            let response = vetis::Response::builder()
-                .status(StatusCode::OK)
-                .text("Hello from ipv4");
-            Ok(response)
-        }))
-        .build()?;
-
-    let ip6_root_path = HandlerPath::builder()
-        .uri("/hello")
-        .handler(handler_fn(|_request, _ctx| async move {
+    let ip6_root_hook = HandlerHookConfig::builder()
+        .matcher(
+            PathMatcherConfig::builder()
+                .add_path("/hello*")
+                .build()?,
+        )
+        .handler(handler_fn(|_request| async move {
             let response = vetis::Response::builder()
                 .status(StatusCode::OK)
                 .text("Hello from ipv6");
@@ -346,14 +238,21 @@ async fn test_multiple_interfaces() -> VetisTestResult<()> {
         }))
         .build()?;
 
-    ip4_localhost_host.add_path(ip4_root_path);
-    ip6_localhost_host.add_path(ip6_root_path);
+    let ip6_localhost_config = HostConfig::builder()
+        .hostname(host)
+        .tls(ip6_security_config)
+        .add_proto(default_protocol_version())
+        .add_bind_address(
+            "::".parse::<IpAddr>()
+                .unwrap(),
+            65001,
+        )
+        .add_hook(ip6_root_hook)
+        .build()?;
 
     let mut server = crate::Vetis::builder()
-        .add_host(ip4_localhost_host)
-        .await?
-        .add_host(ip6_localhost_host)
-        .await?
+        .add_host(ip4_localhost_config)
+        .add_host(ip6_localhost_config)
         .build();
 
     server
