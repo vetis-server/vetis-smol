@@ -1,6 +1,6 @@
-//! Host Hook
+//! Host
 //!
-//! This Hook provides functionality for creating and managing hosts,
+//! This module provides functionality for creating and managing hosts,
 //! including path routing and request handling.
 use crate::io::ReaderStream;
 use cel::{Context, Env};
@@ -13,9 +13,10 @@ use hyper_body_utils::HttpBody;
 use smol::fs::{self, File};
 use std::{path::PathBuf, sync::Arc};
 use vetis::{
-    LogSender, Request, Response, VetisFutureResult, VetisHooks, VetisResult, debug, error,
+    LogSender, Request, Response, VetisFutureResult, VetisHook, VetisHooks, VetisResult, debug,
+    error,
     errors::{ConfigError, HostError, RuntimeError, VetisError},
-    hook::{Hook, HookConfig, HookPhase},
+    hook::HookPhase,
     host::HostConfig,
     log::Logger,
     security::{Tls, TlsConfig},
@@ -146,37 +147,22 @@ impl Host {
             .map_err(|e| VetisError::matcher(e.to_compact_string()))?;
 
         let env = Arc::new(env);
-        let mut phased_hooks: Vec<(HookPhase, Box<dyn HookConfig>)> = Vec::new();
+        let mut hooks = Vec::new();
 
         if let Some(hooks_config) = host_config.hooks() {
             for hook_config in hooks_config {
                 let mut hook = hook_config.boxed_hook();
+                hook.setup().await?;
                 if let Some(matcher) = hook.matcher_mut() {
                     matcher
                         .compile(env.clone())
                         .expect("Could not compile matcher!");
                 }
-
-                for phase in hook.phases().iter() {
-                    phased_hooks.push((phase, hook_config.boxed_clone()));
-                }
+                hooks.push(hook);
             }
         }
 
-        phased_hooks.sort_by_key(|(phase, _)| *phase);
-
-        let hooks: Vec<_> = phased_hooks
-            .into_iter()
-            .map(|(_, hook_config)| {
-                let mut hook = hook_config.boxed_hook();
-                if let Some(matcher) = hook.matcher_mut() {
-                    matcher
-                        .compile(env.clone())
-                        .expect("Could not compile matcher!");
-                }
-                hook
-            })
-            .collect();
+        hooks.sort_by_key(|hook| hook.phase());
 
         Ok(Self { config: host_config, tls, hooks, env })
     }
@@ -188,7 +174,7 @@ impl Host {
     /// * `hook` - A `Hook` instance containing the path configuration.
     pub fn add_hook<H>(&mut self, mut hook: H)
     where
-        H: Hook + Send + Sync + 'static,
+        H: VetisHook + 'static,
     {
         // TODO: Rebuild list of hooks and sort it properly
         if let Some(matcher) = hook.matcher_mut() {
@@ -199,6 +185,9 @@ impl Host {
 
         self.hooks
             .push(Box::new(hook));
+
+        self.hooks
+            .sort_by_key(|hook| hook.phase());
     }
 
     /// Add tls
@@ -345,30 +334,26 @@ impl vetis::host::Host for Host {
 
             for hook in &self.hooks {
                 if hook.has_matches(&expr_context) {
-                    let result = if (hook
-                        .phases()
-                        .contains(HookPhase::PreProcess)
-                        || hook
-                            .phases()
-                            .contains(HookPhase::Rewrite)
-                        || hook
-                            .phases()
-                            .contains(HookPhase::Access)
-                        || hook
-                            .phases()
-                            .contains(HookPhase::Content))
-                        && response.is_none()
-                    {
-                        hook.handle(request, response)
-                            .await
-                    } else if hook
-                        .phases()
-                        .contains(HookPhase::PostContent)
-                    {
-                        hook.handle(request, response)
-                            .await
-                    } else {
-                        continue;
+                    let result = match hook.phase() {
+                        HookPhase::PreProcess | HookPhase::Rewrite | HookPhase::Access
+                            if response.is_none() =>
+                        {
+                            hook.handle(request, response)
+                                .await
+                        }
+                        HookPhase::Content if response.is_none() => {
+                            // TODO: Add cache lookup and short circuit
+                            hook.handle(request, response)
+                                .await
+                            // TODO: Put response on cache
+                        }
+                        HookPhase::PostContent => {
+                            hook.handle(request, response)
+                                .await
+                        }
+                        _ => {
+                            continue;
+                        }
                     };
 
                     if let Err(VetisError::Host(HostError::Runtime(e))) = result {

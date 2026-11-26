@@ -1,8 +1,8 @@
 use crate::{
-    hook::{HandlerHook, handler_fn},
+    hook::{HandlerHookConfig, handler_fn},
     host::Host,
     tests::{
-        CA_CERT, SERVER_CERT, SERVER_KEY, create_hello_handler, create_host,
+        CA_CERT, SERVER_CERT, SERVER_KEY, create_hello_handler, create_hello_hook, create_host,
         default_protocol_version,
     },
 };
@@ -21,54 +21,18 @@ use vetis::{
     VetisServer as _,
     errors::{HostError, RuntimeError, VetisError},
     host::{Host as _, HostConfig},
-    security::TlsConfig,
 };
-use vetis_matchers::request::{PathMatcher, PathMatcherConfig};
+use vetis_matchers::request::PathMatcherConfig;
 
 #[apply(test)]
 async fn test_handler() -> Result<(), Box<dyn std::error::Error>> {
     let port = random_range(9000..=20000);
 
-    let security_config = TlsConfig::builder()
-        .ca_file(CA_CERT)
-        .cert_file(SERVER_CERT)
-        .key_file(SERVER_KEY)
-        .build()?;
-
-    let host_config = HostConfig::builder()
-        .hostname("localhost")
-        .root_directory(".")
-        .protos(&[default_protocol_version()])
-        .tls(security_config)
-        .bind_addresses(&[(
-            "0.0.0.0"
-                .parse()
-                .unwrap(),
-            port,
-        )])
-        .build()?;
-
-    let root_path = HandlerHook::builder()
-        .matcher(PathMatcher::new(
-            PathMatcherConfig::builder()
-                .add_path("/hello*")
-                .build()?,
-        ))
-        .handler(handler_fn(|_request| async move {
-            let response = vetis::Response::builder()
-                .status(StatusCode::OK)
-                .text("Hello from localhost");
-            Ok(response)
-        }))
-        .build()?;
-
-    let mut host = Host::new(host_config).await?;
-
-    host.add_hook(root_path);
-
     let mut server = crate::Vetis::builder()
-        .add_host(host)
-        .await?
+        .add_host(
+            create_host(create_hello_hook(), "localhost", port, CA_CERT, SERVER_CERT, SERVER_KEY)
+                .await?,
+        )
         .build();
 
     server
@@ -99,9 +63,25 @@ async fn test_handler() -> Result<(), Box<dyn std::error::Error>> {
 #[apply(test)]
 async fn test_missing_path() -> Result<(), Box<dyn std::error::Error>> {
     let port = random_range(9000..=20000);
-    let host =
-        create_host(create_hello_handler(), "localhost", port, CA_CERT, SERVER_CERT, SERVER_KEY)
-            .await?;
+    let host_config = create_host(
+        HandlerHookConfig::builder()
+            .matcher(
+                PathMatcherConfig::builder()
+                    .add_path("/hello*")
+                    .build()
+                    .unwrap(),
+            )
+            .handler(create_hello_handler())
+            .build()
+            .unwrap(),
+        "localhost",
+        port,
+        CA_CERT,
+        SERVER_CERT,
+        SERVER_KEY,
+    )
+    .await?;
+    let host = Host::new(host_config).await?;
     let original_request =
         Request::get(format!("https://localhost:{}/not-found", port)).body(HttpBody::empty())?;
     let request = vetis::Request::new(original_request);
@@ -115,9 +95,9 @@ async fn test_missing_path() -> Result<(), Box<dyn std::error::Error>> {
 
 #[apply(test)]
 async fn test_handler_path_matches_descendants() -> Result<(), Box<dyn std::error::Error>> {
-    let host =
-        create_host(create_hello_handler(), "localhost", 0, CA_CERT, SERVER_CERT, SERVER_KEY)
-            .await?;
+    let host_config =
+        create_host(create_hello_hook(), "localhost", 0, CA_CERT, SERVER_CERT, SERVER_KEY).await?;
+    let host = Host::new(host_config).await?;
     let original_request =
         Request::get("https://localhost:0/hello/child").body(HttpBody::empty())?;
     let response = host
@@ -132,9 +112,10 @@ async fn test_handler_path_matches_descendants() -> Result<(), Box<dyn std::erro
 #[apply(test)]
 async fn test_forbidden_traversal() -> Result<(), Box<dyn std::error::Error>> {
     let port = random_range(9000..=20000);
-    let host =
-        create_host(create_hello_handler(), "localhost", port, CA_CERT, SERVER_CERT, SERVER_KEY)
+    let host_config =
+        create_host(create_hello_hook(), "localhost", port, CA_CERT, SERVER_CERT, SERVER_KEY)
             .await?;
+    let host = Host::new(host_config).await?;
     let original_request =
         Request::get(format!("https://localhost:{}/../hello", port)).body(HttpBody::empty())?;
     let request = vetis::Request::new(original_request);
@@ -150,12 +131,30 @@ async fn test_forbidden_traversal() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_auth_error() -> Result<(), Box<dyn std::error::Error>> {
     let handler = handler_fn(|_request| async move {
         Err(VetisError::Host(HostError::Runtime(
-            RuntimeError::new("Nothing").with_status_code(StatusCode::UNAUTHORIZED),
+            RuntimeError::new("Unauthorized").with_status_code(StatusCode::UNAUTHORIZED),
         )))
     });
 
     let port = random_range(9000..=20000);
-    let host = create_host(handler, "localhost", port, CA_CERT, SERVER_CERT, SERVER_KEY).await?;
+    let host_config = create_host(
+        HandlerHookConfig::builder()
+            .matcher(
+                PathMatcherConfig::builder()
+                    .add_path("/hello*")
+                    .build()
+                    .unwrap(),
+            )
+            .handler(handler)
+            .build()
+            .unwrap(),
+        "localhost",
+        port,
+        CA_CERT,
+        SERVER_CERT,
+        SERVER_KEY,
+    )
+    .await?;
+    let host = Host::new(host_config).await?;
     let original_request =
         Request::get(format!("https://localhost:{}/hello", port)).body(HttpBody::empty())?;
     let request = vetis::Request::new(original_request);
@@ -176,7 +175,25 @@ async fn test_proxy_error() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let port = random_range(9000..=20000);
-    let host = create_host(handler, "localhost", port, CA_CERT, SERVER_CERT, SERVER_KEY).await?;
+    let host_config = create_host(
+        HandlerHookConfig::builder()
+            .matcher(
+                PathMatcherConfig::builder()
+                    .add_path("/hello*")
+                    .build()
+                    .unwrap(),
+            )
+            .handler(handler)
+            .build()
+            .unwrap(),
+        "localhost",
+        port,
+        CA_CERT,
+        SERVER_CERT,
+        SERVER_KEY,
+    )
+    .await?;
+    let host = Host::new(host_config).await?;
     let original_request =
         Request::get(format!("https://localhost:{}/hello", port)).body(HttpBody::empty())?;
     let request = vetis::Request::new(original_request);
@@ -197,7 +214,25 @@ async fn test_content_error() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let port = random_range(9000..=20000);
-    let host = create_host(handler, "localhost", port, CA_CERT, SERVER_CERT, SERVER_KEY).await?;
+    let host_config = create_host(
+        HandlerHookConfig::builder()
+            .matcher(
+                PathMatcherConfig::builder()
+                    .add_path("/hello*")
+                    .build()
+                    .unwrap(),
+            )
+            .handler(handler)
+            .build()
+            .unwrap(),
+        "localhost",
+        port,
+        CA_CERT,
+        SERVER_CERT,
+        SERVER_KEY,
+    )
+    .await?;
+    let host = Host::new(host_config).await?;
     let original_request =
         Request::get(format!("https://localhost:{}/hello", port)).body(HttpBody::empty())?;
     let request = vetis::Request::new(original_request);
@@ -218,7 +253,25 @@ async fn assert_content_error_status(
         async move { Err(VetisError::Host(HostError::Runtime(error))) }
     });
 
-    let host = create_host(handler, "localhost", 0, CA_CERT, SERVER_CERT, SERVER_KEY).await?;
+    let host_config = create_host(
+        HandlerHookConfig::builder()
+            .matcher(
+                PathMatcherConfig::builder()
+                    .add_path("/hello*")
+                    .build()
+                    .unwrap(),
+            )
+            .handler(handler)
+            .build()
+            .unwrap(),
+        "localhost",
+        0,
+        CA_CERT,
+        SERVER_CERT,
+        SERVER_KEY,
+    )
+    .await?;
+    let host = Host::new(host_config).await?;
     let original_request = Request::get("https://localhost:0/hello").body(HttpBody::empty())?;
     let response = host
         .route(vetis::Request::new(original_request), None)
@@ -242,9 +295,9 @@ async fn test_content_error_status_mappings() -> Result<(), Box<dyn std::error::
 
 #[apply(test)]
 async fn test_status_page_uses_configured_file() -> Result<(), Box<dyn std::error::Error>> {
-    let host =
-        create_host(create_hello_handler(), "localhost", 0, CA_CERT, SERVER_CERT, SERVER_KEY)
-            .await?;
+    let host_config =
+        create_host(create_hello_hook(), "localhost", 0, CA_CERT, SERVER_CERT, SERVER_KEY).await?;
+    let host = Host::new(host_config).await?;
     let response = host
         .serve_status_page(
             RuntimeError::new("some message").with_status_code(StatusCode::NOT_FOUND),
@@ -267,9 +320,9 @@ async fn test_status_page_uses_configured_file() -> Result<(), Box<dyn std::erro
 
 #[apply(test)]
 async fn test_status_page_falls_back_to_reason() -> Result<(), Box<dyn std::error::Error>> {
-    let host =
-        create_host(create_hello_handler(), "localhost", 0, CA_CERT, SERVER_CERT, SERVER_KEY)
-            .await?;
+    let host_config =
+        create_host(create_hello_hook(), "localhost", 0, CA_CERT, SERVER_CERT, SERVER_KEY).await?;
+    let host = Host::new(host_config).await?;
     let response = host
         .serve_status_page(RuntimeError::new("some message"), None)
         .await?

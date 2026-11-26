@@ -1,19 +1,15 @@
 #![allow(unreachable_code, dead_code)]
-use crate::{
-    hook::{HandlerFn, HandlerHook, handler_fn},
-    host::Host,
-};
+use crate::hook::{HandlerFn, HandlerHookConfig, handler_fn};
 use http::{StatusCode, Version};
+use std::net::Ipv4Addr;
 use vetis::{host::HostConfig, security::TlsConfig};
-use vetis_macros::status_pages;
-use vetis_matchers::request::{PathMatcher, PathMatcherConfig};
+use vetis_matchers::request::PathMatcherConfig;
 
+mod hook;
 mod host;
 mod io;
 mod lib;
 mod listener;
-
-mod paths;
 #[cfg(target_os = "linux")]
 mod server;
 #[cfg(feature = "http3")]
@@ -44,15 +40,28 @@ fn create_hello_handler() -> HandlerFn {
     })
 }
 
+fn create_hello_hook() -> HandlerHookConfig {
+    HandlerHookConfig::builder()
+        .matcher(
+            PathMatcherConfig::builder()
+                .add_path("/hello*")
+                .build()
+                .unwrap(),
+        )
+        .handler(create_hello_handler())
+        .build()
+        .unwrap()
+}
+
 async fn create_host(
-    handler: HandlerFn,
+    hook_config: HandlerHookConfig,
     hostname: &str,
     port: u16,
     ca: &str,
     cert: &str,
     key: &str,
-) -> Result<Host, Box<dyn std::error::Error>> {
-    let security_config = TlsConfig::builder()
+) -> Result<HostConfig, Box<dyn std::error::Error>> {
+    let tls_config = TlsConfig::builder()
         .ca_file(ca)
         .cert_file(cert)
         .key_file(key)
@@ -61,31 +70,12 @@ async fn create_host(
     let host_config = HostConfig::builder()
         .hostname(hostname)
         .root_directory(".")
-        .protos(&[default_protocol_version()])
-        .tls(security_config)
-        .status_pages(status_pages! {
-            404 @ "files/404.html"
-        })
-        .bind_addresses(&[(
-            "0.0.0.0"
-                .parse()
-                .unwrap(),
-            port,
-        )])
+        .tls(tls_config)
+        .add_proto(default_protocol_version())
+        .add_status_page(404, "files/public/404.html".into())
+        .add_bind_address(Ipv4Addr::LOCALHOST, port)
+        .add_hook(hook_config)
         .build()?;
 
-    let root_path = HandlerHook::builder()
-        .matcher(PathMatcher::new(
-            PathMatcherConfig::builder()
-                .add_path("/hello*")
-                .build()?,
-        ))
-        .handler(handler)
-        .build()?;
-
-    let mut host = Host::new(host_config).await?;
-
-    host.add_hook(root_path);
-
-    Ok(host)
+    Ok(host_config)
 }

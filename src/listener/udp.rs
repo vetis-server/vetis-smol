@@ -1,4 +1,4 @@
-use crate::{VetisHosts, host::Host, tls::TlsFactory, worker::udp::UdpWorker};
+use crate::{VetisHosts, tls::TlsFactory, worker::udp::UdpWorker};
 use compact_str::ToCompactString;
 use crossfire::{
     MAsyncRx, MAsyncTx,
@@ -18,7 +18,6 @@ use std::{
 use vetis::{
     LogSender, VetisResult, error,
     errors::{ListenerError, StartupError, VetisError},
-    host::Host as _,
     info,
     listener::ListenerConfig,
     log::Logger,
@@ -26,7 +25,6 @@ use vetis::{
 /// UDP listener
 pub struct UdpListener {
     config: ListenerConfig,
-    hosts: VetisHosts<Host>,
     signal: Option<see::sync::Sender<bool>>,
     inner: Option<UdpSocket>,
     logger: Option<Logger<LogSender>>,
@@ -89,36 +87,10 @@ impl UdpListener {
 }
 
 impl vetis::listener::Listener for UdpListener {
-    type RuntimeHost = Host;
     type Logger = Logger<LogSender>;
-
-    fn add_host(&mut self, host: Arc<Self::RuntimeHost>) -> VetisResult<()> {
-        // Add a host
-        let hostname = match self.config.port() {
-            443 => host
-                .hostname()
-                .to_string(),
-            _ => format!("{}:{}", host.hostname(), self.config().port()),
-        };
-        self.hosts
-            .pin()
-            .insert(hostname, host.clone());
-        Ok(())
-    }
-
-    fn remove_host(&mut self, hostname: &str) -> VetisResult<()> {
-        self.hosts
-            .pin()
-            .remove(hostname);
-        Ok(())
-    }
 
     fn logger(&mut self, logger: Self::Logger) {
         self.logger = Some(logger);
-    }
-
-    fn total_hosts(&self) -> usize {
-        self.hosts.len()
     }
 
     async fn reserve_port(&mut self) -> VetisResult<()> {
@@ -183,12 +155,8 @@ impl vetis::listener::Listener for UdpListener {
             Endpoint::new(EndpointConfig::default(), Some(server_config), socket, runtime)
                 .map_err(|e| VetisError::bind(e.to_compact_string()))?;
 
-        let mut dispatcher = ConnectionDispatcher::new(
-            listener,
-            self.hosts.clone(),
-            self.config.clone(),
-            self.logger.clone(),
-        );
+        let mut dispatcher =
+            ConnectionDispatcher::new(listener, self.config.clone(), self.logger.clone());
         let handle = smol::spawn(async move {
             futures_util::select! {
                 _ = shut_signal.changed().fuse() => {
@@ -223,7 +191,6 @@ impl vetis::listener::Listener for UdpListener {
 
 struct ConnectionDispatcher {
     listener: quinn::Endpoint,
-    hosts: VetisHosts<Host>,
     signal: Option<see::sync::Sender<bool>>,
     config: ListenerConfig,
     logger: Option<Logger<LogSender>>,
@@ -234,13 +201,11 @@ struct ConnectionDispatcher {
 impl ConnectionDispatcher {
     pub fn new(
         listener: quinn::Endpoint,
-        hosts: VetisHosts<Host>,
         config: ListenerConfig,
         logger: Option<Logger<LogSender>>,
     ) -> Self {
         Self {
             listener,
-            hosts,
             signal: None,
             config,
             logger,
@@ -258,12 +223,7 @@ impl ConnectionDispatcher {
             .workers()
         {
             info!(&self.logger, "Initializing udp worker: {}", worker_num);
-            let mut worker = UdpWorker::new(
-                worker_num,
-                self.hosts.clone(),
-                self.logger.clone(),
-                receiver.clone(),
-            );
+            let mut worker = UdpWorker::new(worker_num, self.logger.clone(), receiver.clone());
 
             let shut_signal = shut_recv.clone();
             let logger = self.logger.clone();
